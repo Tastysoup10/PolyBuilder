@@ -1,57 +1,71 @@
 /**
- * PolyBuilder -> PolyTrack2 Generator
+ * PolyBuilder - PolyTrack's built-in procedural generator, reimplemented
+ * from the editor generator found in 112.bundle.js.
  *
- * Generates a closed grid-based track and outputs ONLY:
+ * The important difference from the old generator is that this works in
+ * PolyTrack's logical generator grid and then writes the exact world
+ * coordinates used by TrackData.setPart(): x/z are multiplied by 4.
  *
- * {
- *   format: "PolyTrack2",
- *   metadata: {...},
- *   track: {
- *     environment: ...,
- *     environmentId: ...,
- *     sunDirection: ...,
- *     parts: [...]
- *   }
- * }
- *
- * No old "pieces" format is emitted.
+ * Usage:
+ *   node track_generator_fixed.js
+ *   node track_generator_fixed.js --seed 42
+ *   node track_generator_fixed.js --length 50
+ *   node track_generator_fixed.js --out track.json
  */
 
 'use strict';
 
 const fs = require('fs');
 
-// ============================================================
-// POLYTRACK PART IDs
-// ============================================================
-//
-// Confirmed from PolyTrack's actual part enum:
-//
-// 0  Straight
-// 1  TurnSharp
-// 2  SlopeUp
-// 3  SlopeDown
-// 4  Slope
-// 5  Start
-// 6  Finish
-// 7  ToWideMiddle
-// ...
-// 36 TurnShort
-// 37 TurnLong
-// 52 Checkpoint
-//
-// For our 1-grid-cell 90-degree corners, TurnSharp (1)
-// is the appropriate basic corner piece.
-// ============================================================
+function mulberry32(seed) {
+  let s = seed | 0;
+  return function rng() {
+    s = (s + 0x6d2b79f5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
 
-const PART_ID = {
+function parseArgs(argv) {
+  const args = {
+    seed: Date.now() & 0xffffffff,
+    length: 50,
+    out: null,
+  };
+
+  for (let i = 2; i < argv.length; i++) {
+    switch (argv[i]) {
+      case '--seed':
+        args.seed = Number(argv[++i]);
+        break;
+
+      case '--length':
+      case '--pieces':
+        args.length = Number(argv[++i]);
+        break;
+
+      case '--out':
+        args.out = argv[++i];
+        break;
+
+      default:
+        throw new Error(`Unknown argument: ${argv[i]}`);
+    }
+  }
+
+  if (!Number.isInteger(args.length) || args.length < 1) {
+    throw new Error('--length must be a positive integer');
+  }
+
+  return args;
+}
+
+
+// Exact PolyTrack part IDs from the game's TrackPartType enum.
+const PART = Object.freeze({
   Straight: 0,
-
-  // IMPORTANT:
-  // 1 = TurnSharp
-  // 7 = ToWideMiddle
-  Turn: 1,
-
+  TurnSharp: 1,
   SlopeUp: 2,
   SlopeDown: 3,
   Slope: 4,
@@ -59,844 +73,1364 @@ const PART_ID = {
   Start: 5,
   Finish: 6,
 
-  Checkpoint: 52,
-};
+  ToWideLeft: 8,
+  ToWideRight: 9,
+  StraightWide: 10,
+  InnerCornerWide: 11,
+  OuterCornerWide: 12,
 
-// ============================================================
-// ROTATION
-// ============================================================
-//
-// Your decoder stores:
-//   rotation      = 0..3
-//   rotationAxis  = 0..7
-//
-// Axis 0 = YPositive.
-//
-// Basic direction convention:
-//
-//   0 = East  (+X)
-//   1 = South (+Z)
-//   2 = West  (-X)
-//   3 = North (-Z)
-// ============================================================
+  SlopeUpLeftWide: 13,
+  SlopeUpRightWide: 14,
+  SlopeDownLeftWide: 15,
+  SlopeDownRightWide: 16,
+  SlopeLeftWide: 17,
+  SlopeRightWide: 18,
 
-const ROTATION_AXIS_Y = 0;
+  PillarTop: 19,
+  PillarMiddle: 20,
+  PillarBottom: 21,
+  PillarShort: 22,
+});
 
-const DIR_VEC = [
-  [1, 0],   // E
-  [0, 1],   // S
-  [-1, 0],  // W
-  [0, -1],  // N
-];
 
-const DIR_NAME = [
-  'E',
-  'S',
-  'W',
-  'N',
-];
+// TrackData's Y-positive rotation axis.
+const ROTATION_AXIS_Y_POSITIVE = 0;
 
-const HEADING_ROTATION = {
-  E: 0,
-  S: 1,
-  W: 2,
-  N: 3,
-};
 
-// ============================================================
-// SEEDED RNG
-// ============================================================
-
-function mulberry32(seed) {
-  return function () {
-    seed |= 0;
-
-    seed =
-      (seed + 0x6D2B79F5) |
-      0;
-
-    let t =
-      Math.imul(
-        seed ^ (seed >>> 15),
-        1 | seed
-      );
-
-    t =
-      (t +
-        Math.imul(
-          t ^ (t >>> 7),
-          61 | t
-        )) ^
-      t;
-
-    return (
-      (t ^ (t >>> 14)) >>> 0
-    ) / 4294967296;
-  };
+function key(x, y, z) {
+  return `${x}|${y}|${z}`;
 }
 
-// ============================================================
-// CLI
-// ============================================================
 
-function parseArgs(argv) {
-  const args = {
-    seed:
-      Date.now() &
-      0xffffffff,
-
-    pieces: 30,
-
-    out: null,
-
-    maxHeight: 3,
-  };
-
-  for (
-    let i = 2;
-    i < argv.length;
-    i++
-  ) {
-    if (
-      argv[i] === '--seed'
-    ) {
-      args.seed =
-        parseInt(
-          argv[++i],
-          10
-        );
-    }
-
-    else if (
-      argv[i] === '--pieces'
-    ) {
-      args.pieces =
-        parseInt(
-          argv[++i],
-          10
-        );
-    }
-
-    else if (
-      argv[i] === '--out'
-    ) {
-      args.out =
-        argv[++i];
-    }
-
-    else if (
-      argv[i] === '--maxHeight'
-    ) {
-      args.maxHeight =
-        parseInt(
-          argv[++i],
-          10
-        );
-    }
-  }
-
-  return args;
+function normalizeRotation(rotation) {
+  return ((rotation % 4) + 4) % 4;
 }
 
-// ============================================================
-// HELPERS
-// ============================================================
 
-function key(
-  x,
-  y,
-  z
-) {
-  return `${x},${y},${z}`;
-}
+/**
+ * Reimplementation of the editor's generator.
+ *
+ * Entries with type === null are collision/clearance markers.
+ * They are never emitted as actual track parts, but they participate
+ * in collision detection.
+ */
+function generatePolyTrack(rng, length = 50) {
 
-function shuffle(
-  arr,
-  rng
-) {
-  const result =
-    arr.slice();
+  while (true) {
 
-  for (
-    let i =
-      result.length - 1;
-    i > 0;
-    i--
-  ) {
-    const j =
-      Math.floor(
-        rng() * (i + 1)
-      );
+    const occupied = new Map();
+    let collision = false;
 
-    [
-      result[i],
-      result[j],
-    ] = [
-      result[j],
-      result[i],
-    ];
-  }
+    // PolyTrack generator state.
+    let x = 0;
+    let lateral = 0;
+    let z = 0;
 
-  return result;
-}
+    let direction = Math.floor(4 * rng());
 
-function directionBetween(
-  x0,
-  z0,
-  x1,
-  z1
-) {
-  const dx =
-    x1 - x0;
-
-  const dz =
-    z1 - z0;
-
-  for (
-    let i = 0;
-    i < DIR_VEC.length;
-    i++
-  ) {
-    if (
-      DIR_VEC[i][0] === dx &&
-      DIR_VEC[i][1] === dz
-    ) {
-      return i;
+    if (rng() < 0.5) {
+      lateral = Math.floor(20 * rng());
     }
-  }
 
-  return -1;
-}
 
-// ============================================================
-// GENERATE CLOSED LOOP
-// ============================================================
+    // ------------------------------------------------------------
+    // Direction helpers
+    // ------------------------------------------------------------
 
-function generateLoop(
-  rng,
-  targetPieces,
-  maxHeight
-) {
-  const minLen =
-    Math.max(
-      8,
-      Math.floor(
-        targetPieces * 0.7
-      )
-    );
+    function forward() {
 
-  const maxLen =
-    Math.max(
-      minLen + 1,
-      targetPieces * 2
-    );
+      switch (direction) {
 
-  for (
-    let attempt = 0;
-    attempt < 500;
-    attempt++
-  ) {
-    const start = [
-      0,
-      0,
-      0,
-    ];
+        case 0:
+          --z;
+          break;
 
-    const visited =
-      new Set([
-        key(...start),
-      ]);
+        case 1:
+          --x;
+          break;
 
-    const path = [
-      start,
-    ];
+        case 2:
+          ++z;
+          break;
 
-    let direction =
-      Math.floor(
-        rng() * 4
-      );
+        case 3:
+          ++x;
+          break;
+      }
+    }
 
-    while (
-      path.length <
-      maxLen
-    ) {
-      const current =
-        path[
-          path.length - 1
-        ];
 
-      const [
-        x,
-        y,
-        z,
-      ] = current;
+    function backward() {
 
-      // ------------------------------------------------------
-      // Try to close the loop.
-      //
-      // IMPORTANT:
-      // We only close horizontally at the original height.
-      // ------------------------------------------------------
+      switch (direction) {
 
-      if (
-        path.length >=
-        minLen
-      ) {
-        const [
-          sx,
-          sy,
-          sz,
-        ] = start;
+        case 0:
+          ++z;
+          break;
 
-        const dx =
-          sx - x;
+        case 1:
+          ++x;
+          break;
 
-        const dz =
-          sz - z;
+        case 2:
+          --z;
+          break;
 
-        if (
-          Math.abs(dx) +
-            Math.abs(dz) ===
-            1 &&
-          y === sy
-        ) {
-          path.push(start);
+        case 3:
+          --x;
+          break;
+      }
+    }
 
-          return {
-            path,
-            closed: true,
-          };
+
+    function sideLeft() {
+
+      switch ((direction + 1) % 4) {
+
+        case 0:
+          --z;
+          break;
+
+        case 1:
+          --x;
+          break;
+
+        case 2:
+          ++z;
+          break;
+
+        case 3:
+          ++x;
+          break;
+      }
+    }
+
+
+    function sideRight() {
+
+      switch (((direction - 1) % 4 + 4) % 4) {
+
+        case 0:
+          --z;
+          break;
+
+        case 1:
+          --x;
+          break;
+
+        case 2:
+          ++z;
+          break;
+
+        case 3:
+          ++x;
+          break;
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Logical part map
+    // ------------------------------------------------------------
+
+    function add(px, py, pz, type, rotation = 0) {
+
+      const k = key(px, py, pz);
+
+      if (occupied.has(k)) {
+        collision = true;
+      }
+
+      occupied.set(k, {
+        x: px,
+        y: py,
+        z: pz,
+        type,
+        direction: normalizeRotation(rotation),
+      });
+    }
+
+
+    function isOccupied(px, py, pz) {
+      return occupied.has(key(px, py, pz));
+    }
+
+
+    // ------------------------------------------------------------
+    // Support/pillar pieces
+    // ------------------------------------------------------------
+
+    function supports() {
+
+      let blocked = false;
+
+      for (let yy = 0; yy < lateral; ++yy) {
+
+        if (isOccupied(x, yy, z)) {
+          blocked = true;
+          break;
         }
       }
 
-      // ------------------------------------------------------
-      // Prefer straight movement, but allow left/right.
-      // ------------------------------------------------------
 
-      const order = [
-        direction,
-        (direction + 3) % 4,
-        (direction + 1) % 4,
-      ];
+      if (!blocked) {
 
-      let moved =
-        false;
+        for (let yy = 0; yy < lateral; ++yy) {
 
-      for (
-        const d of
-          shuffle(
-            order,
-            rng
-          )
-      ) {
-        const [
-          dx,
-          dz,
-        ] = DIR_VEC[d];
+          let type;
 
-        // Occasional elevation change.
-        let dy = 0;
+          if (yy === 0 && yy === lateral - 1) {
+            type = PART.PillarShort;
+          }
 
-        if (
-          rng() < 0.12
-        ) {
-          dy =
-            rng() < 0.5
-              ? 1
-              : -1;
+          else if (yy === 0) {
+            type = PART.PillarBottom;
+          }
+
+          else if (yy === lateral - 1) {
+            type = PART.PillarTop;
+          }
+
+          else {
+            type = PART.PillarMiddle;
+          }
+
+          add(x, yy, z, type, 0);
+        }
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Narrow track
+    // ------------------------------------------------------------
+
+    function narrow(t) {
+
+      if (t > 0) {
+
+        --t;
+
+        if (rng() < 0.2) {
+          wideTransition(t);
         }
 
-        const ny =
-          Math.max(
-            0,
-            Math.min(
-              maxHeight,
-              y + dy
-            )
+        else if (rng() < 0.6) {
+          straight(t);
+        }
+
+        else if (rng() < 0.5) {
+          slope(
+            t,
+            lateral < 2 || rng() < 0.5
           );
+        }
 
-        const nx =
-          x + dx;
+        else if (rng() < 0.5) {
+          turnLeft(t);
+        }
 
-        const nz =
-          z + dz;
+        else {
+          turnRight(t);
+        }
 
-        const nextKey =
-          key(
-            nx,
-            ny,
-            nz
+      }
+
+      else {
+        finish();
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Wide track
+    // ------------------------------------------------------------
+
+    function wide(t) {
+
+      if (t > 0) {
+
+        --t;
+
+        if (rng() < 0.1) {
+          narrowTransition(t);
+        }
+
+        else if (rng() < 0.6) {
+          wideStraight(t);
+        }
+
+        else if (rng() < 0.5) {
+          wideSlope(
+            t,
+            lateral < 2 || rng() < 0.5
           );
+        }
+
+        else if (rng() < 0.5) {
+          wideCornerA(t);
+        }
+
+        else {
+          wideCornerB(t);
+        }
+
+      }
+
+      else {
+        narrowTransition(t);
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Straight
+    // ------------------------------------------------------------
+
+    function straight(t) {
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.Straight,
+        direction
+      );
+
+      supports();
+
+      forward();
+
+      narrow(t);
+    }
+
+
+    // ------------------------------------------------------------
+    // Left turn
+    // ------------------------------------------------------------
+
+    function turnLeft(t) {
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.TurnSharp,
+        direction - 1
+      );
+
+      supports();
+
+      direction = (direction + 1) % 4;
+
+      forward();
+
+      if (t > 0) {
+
+        --t;
+
+        if (rng() < 0.4) {
+          straight(t);
+        }
+
+        else if (rng() < 0.5) {
+          turnLeft(t);
+        }
+
+        else {
+          turnRight(t);
+        }
+
+      }
+
+      else {
+        finish();
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Right turn
+    // ------------------------------------------------------------
+
+    function turnRight(t) {
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.TurnSharp,
+        direction
+      );
+
+      supports();
+
+      direction =
+        ((direction - 1) % 4 + 4) % 4;
+
+      forward();
+
+      if (t > 0) {
+
+        --t;
+
+        if (rng() < 0.4) {
+          straight(t);
+        }
+
+        else if (rng() < 0.5) {
+          turnLeft(t);
+        }
+
+        else {
+          turnRight(t);
+        }
+
+      }
+
+      else {
+        finish();
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Narrow slope
+    // ------------------------------------------------------------
+
+    function slope(t, up) {
+
+      const type =
+        up
+          ? PART.SlopeUp
+          : PART.SlopeDown;
+
+      if (!up) {
+        --lateral;
+      }
+
+      add(
+        x,
+        lateral + 1,
+        z,
+        null,
+        0
+      );
+
+      add(
+        x,
+        lateral,
+        z,
+        type,
+        direction
+      );
+
+      forward();
+
+      if (up) {
+        ++lateral;
+      }
+
+
+      if (t > 0) {
+
+        --t;
 
         if (
-          visited.has(
-            nextKey
-          )
+          rng() < 0.4 ||
+          lateral <= 3
         ) {
+
+          reverseSlope(t, up);
+
+        }
+
+        else {
+
+          sideSlope(t, up);
+
+        }
+
+      }
+
+      else {
+
+        reverseSlope(t, up);
+
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Reverse narrow slope
+    // ------------------------------------------------------------
+
+    function reverseSlope(t, up) {
+
+      if (!up) {
+        --lateral;
+      }
+
+      add(
+        x,
+        lateral + 1,
+        z,
+        null,
+        0
+      );
+
+      const type =
+        up
+          ? PART.SlopeDown
+          : PART.SlopeUp;
+
+      add(
+        x,
+        lateral,
+        z,
+        type,
+        direction + 2
+      );
+
+      forward();
+
+      if (up) {
+        ++lateral;
+      }
+
+      if (t > 0) {
+        narrow(t - 1);
+      }
+
+      else {
+        finish();
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Sideways narrow slope
+    // ------------------------------------------------------------
+
+    function sideSlope(t, up) {
+
+      if (!up) {
+        lateral -= 2;
+      }
+
+      add(
+        x,
+        lateral + 1,
+        z,
+        null,
+        0
+      );
+
+      add(
+        x,
+        lateral + 2,
+        z,
+        null,
+        0
+      );
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.Slope,
+        up
+          ? direction
+          : direction + 2
+      );
+
+      forward();
+
+      if (up) {
+        lateral += 2;
+      }
+
+      if (t > 0) {
+
+        --t;
+
+        if (
+          rng() < 0.4 ||
+          lateral <= 3
+        ) {
+
+          reverseSlope(t, up);
+
+        }
+
+        else {
+
+          sideSlope(t, up);
+
+        }
+
+      }
+
+      else {
+
+        reverseSlope(t, up);
+
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Finish
+    // ------------------------------------------------------------
+
+    function finish() {
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.Finish,
+        direction
+      );
+    }
+
+
+    // ------------------------------------------------------------
+    // Start
+    // ------------------------------------------------------------
+
+    function start(t) {
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.Start,
+        direction
+      );
+
+      supports();
+
+      forward();
+
+      narrow(t);
+    }
+
+
+    // ------------------------------------------------------------
+    // Narrow -> Wide
+    // ------------------------------------------------------------
+
+    function wideTransition(t) {
+
+      if (rng() < 0.5) {
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.ToWideLeft,
+          direction
+        );
+
+        supports();
+
+        sideRight();
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.OuterCornerWide,
+          direction + 2
+        );
+
+        supports();
+
+        forward();
+
+      }
+
+      else {
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.ToWideRight,
+          direction
+        );
+
+        supports();
+
+        sideLeft();
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.OuterCornerWide,
+          direction + 1
+        );
+
+        supports();
+
+        forward();
+
+        sideRight();
+      }
+
+      wide(t);
+    }
+
+
+    // ------------------------------------------------------------
+    // Wide -> Narrow
+    // ------------------------------------------------------------
+
+    function narrowTransition(t) {
+
+      if (rng() < 0.5) {
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.OuterCornerWide,
+          direction + 3
+        );
+
+        supports();
+
+        sideLeft();
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.ToWideRight,
+          direction + 2
+        );
+
+        supports();
+
+        forward();
+
+      }
+
+      else {
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.ToWideLeft,
+          direction + 2
+        );
+
+        supports();
+
+        sideLeft();
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.OuterCornerWide,
+          direction
+        );
+
+        supports();
+
+        forward();
+
+        sideRight();
+      }
+
+      narrow(t);
+    }
+
+
+    // ------------------------------------------------------------
+    // Wide straight
+    // ------------------------------------------------------------
+
+    function wideStraight(t) {
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.StraightWide,
+        direction
+      );
+
+      supports();
+
+      sideLeft();
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.StraightWide,
+        direction + 2
+      );
+
+      supports();
+
+      sideRight();
+
+      forward();
+
+      wide(t);
+    }
+
+
+    // ------------------------------------------------------------
+    // Wide corner A
+    // ------------------------------------------------------------
+
+    function wideCornerA(t) {
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.StraightWide,
+        direction
+      );
+
+      supports();
+
+      forward();
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.OuterCornerWide,
+        direction + 3
+      );
+
+      supports();
+
+      sideLeft();
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.StraightWide,
+        direction + 1
+      );
+
+      supports();
+
+      backward();
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.InnerCornerWide,
+        direction + 3
+      );
+
+      supports();
+
+      forward();
+
+      direction =
+        (direction + 1) % 4;
+
+      forward();
+
+      wide(t);
+    }
+
+
+    // ------------------------------------------------------------
+    // Wide corner B
+    // ------------------------------------------------------------
+
+    function wideCornerB(t) {
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.InnerCornerWide,
+        direction
+      );
+
+      supports();
+
+      sideLeft();
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.StraightWide,
+        direction + 2
+      );
+
+      supports();
+
+      forward();
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.OuterCornerWide,
+        direction
+      );
+
+      supports();
+
+      sideRight();
+
+      add(
+        x,
+        lateral,
+        z,
+        PART.StraightWide,
+        direction + 1
+      );
+
+      supports();
+
+      backward();
+
+      direction =
+        ((direction - 1) % 4 + 4) % 4;
+
+      forward();
+
+      wide(t);
+    }
+
+
+    // ------------------------------------------------------------
+    // Wide slope
+    // ------------------------------------------------------------
+
+    function wideSlope(t, up) {
+
+      let a;
+      let b;
+
+      if (up) {
+
+        a = PART.SlopeUpLeftWide;
+        b = PART.SlopeUpRightWide;
+
+      }
+
+      else {
+
+        a = PART.SlopeDownLeftWide;
+        b = PART.SlopeDownRightWide;
+
+      }
+
+
+      if (!up) {
+        --lateral;
+      }
+
+
+      sideLeft();
+
+      add(
+        x,
+        lateral + 1,
+        z,
+        null,
+        0
+      );
+
+      add(
+        x,
+        lateral,
+        z,
+        a,
+        direction
+      );
+
+
+      sideRight();
+
+      add(
+        x,
+        lateral + 1,
+        z,
+        null,
+        0
+      );
+
+      add(
+        x,
+        lateral,
+        z,
+        b,
+        direction
+      );
+
+
+      forward();
+
+      if (up) {
+        ++lateral;
+      }
+
+
+      if (t > 0) {
+
+        --t;
+
+        if (
+          rng() < 0.4 ||
+          lateral <= 3
+        ) {
+
+          wideSlopeReverse(t, up);
+
+        }
+
+        else {
+
+          wideSlopeSide(t, up);
+
+        }
+
+      }
+
+      else {
+
+        wideSlopeReverse(t, up);
+
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Reverse wide slope
+    // ------------------------------------------------------------
+
+    function wideSlopeReverse(t, up) {
+
+      let a;
+      let b;
+
+
+      if (!up) {
+        --lateral;
+      }
+
+
+      if (up) {
+
+        a = PART.SlopeDownRightWide;
+        b = PART.SlopeDownLeftWide;
+
+      }
+
+      else {
+
+        a = PART.SlopeUpRightWide;
+        b = PART.SlopeUpLeftWide;
+
+      }
+
+
+      sideLeft();
+
+      add(
+        x,
+        lateral + 1,
+        z,
+        null,
+        0
+      );
+
+      add(
+        x,
+        lateral,
+        z,
+        a,
+        direction + 2
+      );
+
+
+      sideRight();
+
+      add(
+        x,
+        lateral + 1,
+        z,
+        null,
+        0
+      );
+
+      add(
+        x,
+        lateral,
+        z,
+        b,
+        direction + 2
+      );
+
+
+      forward();
+
+      if (up) {
+        ++lateral;
+      }
+
+      wide(t);
+    }
+
+
+    // ------------------------------------------------------------
+    // Sideways wide slope
+    // ------------------------------------------------------------
+
+    function wideSlopeSide(t, up) {
+
+      if (!up) {
+        lateral -= 2;
+      }
+
+
+      if (up) {
+
+        sideLeft();
+
+        add(
+          x,
+          lateral + 1,
+          z,
+          null,
+          0
+        );
+
+        add(
+          x,
+          lateral + 2,
+          z,
+          null,
+          0
+        );
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.SlopeLeftWide,
+          direction
+        );
+
+
+        sideRight();
+
+        add(
+          x,
+          lateral + 1,
+          z,
+          null,
+          0
+        );
+
+        add(
+          x,
+          lateral + 2,
+          z,
+          null,
+          0
+        );
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.SlopeRightWide,
+          direction
+        );
+
+      }
+
+      else {
+
+        sideLeft();
+
+        add(
+          x,
+          lateral + 1,
+          z,
+          null,
+          0
+        );
+
+        add(
+          x,
+          lateral + 2,
+          z,
+          null,
+          0
+        );
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.SlopeRightWide,
+          direction + 2
+        );
+
+
+        sideRight();
+
+        add(
+          x,
+          lateral + 1,
+          z,
+          null,
+          0
+        );
+
+        add(
+          x,
+          lateral + 2,
+          z,
+          null,
+          0
+        );
+
+        add(
+          x,
+          lateral,
+          z,
+          PART.SlopeLeftWide,
+          direction + 2
+        );
+      }
+
+
+      forward();
+
+      if (up) {
+        lateral += 2;
+      }
+
+
+      if (t > 0) {
+
+        --t;
+
+        if (
+          rng() < 0.4 ||
+          lateral <= 3
+        ) {
+
+          wideSlopeReverse(t, up);
+
+        }
+
+        else {
+
+          wideSlopeSide(t, up);
+
+        }
+
+      }
+
+      else {
+
+        wideSlopeReverse(t, up);
+
+      }
+    }
+
+
+    // ------------------------------------------------------------
+    // Begin generation
+    // ------------------------------------------------------------
+
+    start(length);
+
+
+    // ------------------------------------------------------------
+    // Collision-free attempt
+    // ------------------------------------------------------------
+
+    if (!collision) {
+
+      const parts = [];
+
+      for (const entry of occupied.values()) {
+
+        // Null entries are collision markers only.
+        if (entry.type == null) {
           continue;
         }
 
-        visited.add(
-          nextKey
-        );
 
-        path.push([
-          nx,
-          ny,
-          nz,
-        ]);
+        parts.push({
 
-        direction = d;
+          // PolyTrack's generator converts logical X/Z
+          // coordinates to world coordinates using *4.
+          x: 4 * entry.x,
 
-        moved = true;
+          y: entry.y,
 
-        break;
+          z: 4 * entry.z,
+
+          partId: entry.type,
+
+          rotation: entry.direction,
+
+          rotationAxis:
+            ROTATION_AXIS_Y_POSITIVE,
+
+          color: 0,
+
+          checkpointOrder: null,
+
+          startOrder:
+            entry.type === PART.Start
+              ? 0
+              : null,
+        });
       }
 
-      if (!moved) {
-        break;
-      }
+
+      return {
+        parts,
+        logicalEntries: occupied.size,
+      };
     }
+
+    // If a collision occurred, discard this entire
+    // attempt and generate again.
   }
+}
+
+
+// ------------------------------------------------------------
+// PolyTrack2 JSON wrapper
+// ------------------------------------------------------------
+
+function makeTrackData(parts, seed) {
 
   return {
-    path: null,
-    closed: false,
-  };
-}
 
-// ============================================================
-// CLASSIFY PATH
-// ============================================================
-//
-// A piece occupies path[i].
-//
-// Its incoming direction is:
-//
-//   path[i-1] -> path[i]
-//
-// Its outgoing direction is:
-//
-//   path[i] -> path[i+1]
-//
-// Therefore a turn MUST be determined from both directions.
-// ============================================================
-
-function classifyPieces(
-  path
-) {
-  const pieces = [];
-
-  // The final element is the duplicated start used to close
-  // the loop, so we don't turn it into another physical piece.
-
-  for (
-    let i = 0;
-    i <
-    path.length - 1;
-    i++
-  ) {
-    const [
-      x,
-      y,
-      z,
-    ] = path[i];
-
-    const [
-      nextX,
-      nextY,
-      nextZ,
-    ] = path[i + 1];
-
-    const outgoing =
-      directionBetween(
-        x,
-        z,
-        nextX,
-        nextZ
-      );
-
-    if (
-      outgoing === -1
-    ) {
-      throw new Error(
-        `Invalid path segment at index ${i}.`
-      );
-    }
-
-    let incoming =
-      outgoing;
-
-    if (i > 0) {
-      const [
-        previousX,
-        ,
-        previousZ,
-      ] = path[i - 1];
-
-      incoming =
-        directionBetween(
-          previousX,
-          previousZ,
-          x,
-          z
-        );
-
-      if (
-        incoming === -1
-      ) {
-        throw new Error(
-          `Invalid incoming direction at index ${i}.`
-        );
-      }
-    }
-
-    const dy =
-      nextY - y;
-
-    let type =
-      'straight';
-
-    // --------------------------------------------------------
-    // Elevation takes priority.
-    // --------------------------------------------------------
-
-    if (dy > 0) {
-      type =
-        'ramp_up';
-    }
-
-    else if (dy < 0) {
-      type =
-        'ramp_down';
-    }
-
-    // --------------------------------------------------------
-    // Horizontal turn.
-    // --------------------------------------------------------
-
-    else if (
-      i > 0
-    ) {
-      const turn =
-        (
-          outgoing -
-          incoming +
-          4
-        ) % 4;
-
-      if (
-        turn === 1
-      ) {
-        type =
-          'turn_right';
-      }
-
-      else if (
-        turn === 3
-      ) {
-        type =
-          'turn_left';
-      }
-
-      else if (
-        turn === 2
-      ) {
-        throw new Error(
-          `U-turn detected at (${x}, ${y}, ${z}).`
-        );
-      }
-    }
-
-    pieces.push({
-      index: i,
-
-      x,
-      y,
-      z,
-
-      incoming,
-
-      outgoing,
-
-      heading:
-        DIR_NAME[outgoing],
-
-      type,
-    });
-  }
-
-  return pieces;
-}
-
-// ============================================================
-// CHECKPOINTS
-// ============================================================
-
-function placeCheckpoints(
-  pieces,
-  everyN
-) {
-  const checkpoints = [];
-
-  for (
-    let i = 0;
-    i < pieces.length;
-    i += everyN
-  ) {
-    // Don't replace the start with a checkpoint.
-    if (
-      pieces[i].index !== 0
-    ) {
-      checkpoints.push(
-        pieces[i].index
-      );
-    }
-  }
-
-  return checkpoints;
-}
-
-// ============================================================
-// TURN ROTATION
-// ============================================================
-//
-// Straight pieces are simple:
-//
-// E = 0
-// S = 1
-// W = 2
-// N = 3
-//
-// For a TurnSharp, the orientation depends on BOTH sides of
-// the corner.
-//
-// We use the following base corner:
-//
-//   incoming E -> outgoing S = rotation 0
-//
-// and rotate that corner around Y.
-//
-// This produces:
-//
-//   E -> S : 0
-//   S -> W : 1
-//   W -> N : 2
-//   N -> E : 3
-//
-// The opposite turning direction uses the mirrored corner.
-//
-//   E -> N : 3
-//   N -> W : 2
-//   W -> S : 1
-//   S -> E : 0
-//
-// ============================================================
-
-function getTurnRotation(
-  incoming,
-  outgoing
-) {
-  const turn =
-    (
-      outgoing -
-      incoming +
-      4
-    ) % 4;
-
-  // Right turn.
-  if (
-    turn === 1
-  ) {
-    return incoming;
-  }
-
-  // Left turn.
-  if (
-    turn === 3
-  ) {
-    return outgoing;
-  }
-
-  throw new Error(
-    `Not a 90-degree turn: ${incoming} -> ${outgoing}`
-  );
-}
-
-// ============================================================
-// PART ROTATION
-// ============================================================
-
-function getRotation(
-  piece
-) {
-  if (
-    piece.type ===
-      'turn_left' ||
-    piece.type ===
-      'turn_right'
-  ) {
-    return getTurnRotation(
-      piece.incoming,
-      piece.outgoing
-    );
-  }
-
-  return piece.outgoing;
-}
-
-// ============================================================
-// CREATE POLYTRACK PART
-// ============================================================
-
-function makePart(
-  piece,
-  partId,
-  rotation,
-  extra = {}
-) {
-  return {
-    x: piece.x,
-    y: piece.y,
-    z: piece.z,
-
-    partId,
-
-    rotation,
-
-    rotationAxis:
-      ROTATION_AXIS_Y,
-
-    color: 0,
-
-    ...extra,
-  };
-}
-
-// ============================================================
-// CONVERT TO POLYTRACK2
-// ============================================================
-
-function toPolyTrackData(
-  pieces,
-  checkpoints,
-  seed
-) {
-  const checkpointSet =
-    new Set(
-      checkpoints
-    );
-
-  const parts = [];
-
-  for (
-    const piece of pieces
-  ) {
-    let partId;
-
-    switch (
-      piece.type
-    ) {
-      case 'straight':
-        partId =
-          PART_ID.Straight;
-        break;
-
-      case 'turn_left':
-      case 'turn_right':
-        partId =
-          PART_ID.Turn;
-        break;
-
-      case 'ramp_up':
-        partId =
-          PART_ID.SlopeUp;
-        break;
-
-      case 'ramp_down':
-        partId =
-          PART_ID.SlopeDown;
-        break;
-
-      default:
-        throw new Error(
-          `Unknown piece type: ${piece.type}`
-        );
-    }
-
-    const rotation =
-      getRotation(
-        piece
-      );
-
-    // --------------------------------------------------------
-    // START
-    // --------------------------------------------------------
-
-    if (
-      piece.index === 0
-    ) {
-      parts.push(
-        makePart(
-          piece,
-          PART_ID.Start,
-          rotation,
-          {
-            startOrder: 0,
-          }
-        )
-      );
-
-      continue;
-    }
-
-    // --------------------------------------------------------
-    // CHECKPOINT
-    // --------------------------------------------------------
-
-    if (
-      checkpointSet.has(
-        piece.index
-      )
-    ) {
-      const order =
-        checkpoints.indexOf(
-          piece.index
-        );
-
-      parts.push(
-        makePart(
-          piece,
-          PART_ID.Checkpoint,
-          rotation,
-          {
-            checkpointOrder:
-              order,
-          }
-        )
-      );
-
-      continue;
-    }
-
-    // --------------------------------------------------------
-    // NORMAL PART
-    // --------------------------------------------------------
-
-    parts.push(
-      makePart(
-        piece,
-        partId,
-        rotation
-      )
-    );
-  }
-
-  return {
-    format:
-      'PolyTrack2',
+    format: 'PolyTrack2',
 
     metadata: {
+
       name:
         `Generated Track ${seed}`,
 
@@ -908,6 +1442,7 @@ function toPolyTrackData(
     },
 
     track: {
+
       environment:
         'Summer',
 
@@ -934,485 +1469,66 @@ function toPolyTrackData(
   };
 }
 
-// ============================================================
-// VALIDATION
-// ============================================================
 
-function validateTrack(
-  data
-) {
-  if (
-    data.format !==
-    'PolyTrack2'
-  ) {
-    throw new Error(
-      'Invalid PolyTrack2 format.'
-    );
-  }
-
-  if (
-    !data.metadata
-  ) {
-    throw new Error(
-      'Missing metadata.'
-    );
-  }
-
-  if (
-    !data.track
-  ) {
-    throw new Error(
-      'Missing track object.'
-    );
-  }
-
-  if (
-    !Array.isArray(
-      data.track.parts
-    )
-  ) {
-    throw new Error(
-      'track.parts must be an array.'
-    );
-  }
-
-  if (
-    data.track.parts.length === 0
-  ) {
-    throw new Error(
-      'No track parts were generated.'
-    );
-  }
-
-  let starts = 0;
-  let checkpoints = 0;
-
-  const positions =
-    new Set();
-
-  for (
-    let i = 0;
-    i <
-    data.track.parts.length;
-    i++
-  ) {
-    const part =
-      data.track.parts[i];
-
-    // Coordinates
-    if (
-      !Number.isInteger(
-        part.x
-      ) ||
-      !Number.isInteger(
-        part.y
-      ) ||
-      !Number.isInteger(
-        part.z
-      )
-    ) {
-      throw new Error(
-        `Part ${i}: invalid coordinates.`
-      );
-    }
-
-    // Part ID
-    if (
-      !Number.isInteger(
-        part.partId
-      )
-    ) {
-      throw new Error(
-        `Part ${i}: invalid partId.`
-      );
-    }
-
-    // Rotation
-    if (
-      !Number.isInteger(
-        part.rotation
-      ) ||
-      part.rotation < 0 ||
-      part.rotation > 3
-    ) {
-      throw new Error(
-        `Part ${i}: invalid rotation.`
-      );
-    }
-
-    // Rotation axis
-    if (
-      !Number.isInteger(
-        part.rotationAxis
-      ) ||
-      part.rotationAxis < 0 ||
-      part.rotationAxis > 7
-    ) {
-      throw new Error(
-        `Part ${i}: invalid rotationAxis.`
-      );
-    }
-
-    // Color
-    if (
-      !Number.isInteger(
-        part.color
-      ) ||
-      part.color < 0 ||
-      part.color > 255
-    ) {
-      throw new Error(
-        `Part ${i}: invalid color.`
-      );
-    }
-
-    // Duplicate coordinates should not occur.
-    const position =
-      `${part.x},${part.y},${part.z}`;
-
-    if (
-      positions.has(
-        position
-      )
-    ) {
-      throw new Error(
-        `Duplicate part position: ${position}`
-      );
-    }
-
-    positions.add(
-      position
-    );
-
-    // Start
-    if (
-      part.partId ===
-      PART_ID.Start
-    ) {
-      starts++;
-
-      if (
-        !Number.isInteger(
-          part.startOrder
-        )
-      ) {
-        throw new Error(
-          'Start is missing startOrder.'
-        );
-      }
-    }
-
-    // Checkpoint
-    if (
-      part.partId ===
-      PART_ID.Checkpoint
-    ) {
-      checkpoints++;
-
-      if (
-        !Number.isInteger(
-          part.checkpointOrder
-        )
-      ) {
-        throw new Error(
-          'Checkpoint is missing checkpointOrder.'
-        );
-      }
-    }
-  }
-
-  if (
-    starts !== 1
-  ) {
-    throw new Error(
-      `Expected exactly 1 start, got ${starts}.`
-    );
-  }
-
-  console.log(
-    `Validation OK: ${data.track.parts.length} parts, ${starts} start, ${checkpoints} checkpoints.`
-  );
-}
-
-// ============================================================
-// ASCII MAP
-// ============================================================
-
-function printAsciiMap(
-  pieces
-) {
-  if (
-    !pieces.length
-  ) {
-    return;
-  }
-
-  const xs =
-    pieces.map(
-      p => p.x
-    );
-
-  const zs =
-    pieces.map(
-      p => p.z
-    );
-
-  const minX =
-    Math.min(...xs);
-
-  const maxX =
-    Math.max(...xs);
-
-  const minZ =
-    Math.min(...zs);
-
-  const maxZ =
-    Math.max(...zs);
-
-  // Avoid enormous console output.
-  if (
-    maxX - minX > 100 ||
-    maxZ - minZ > 100
-  ) {
-    console.log(
-      '\nASCII preview skipped: track is larger than 100x100.'
-    );
-
-    return;
-  }
-
-  const lookup =
-    new Map();
-
-  for (
-    const piece of pieces
-  ) {
-    lookup.set(
-      `${piece.x},${piece.z}`,
-      piece
-    );
-  }
-
-  console.log(
-    '\nTop-down layout:'
-  );
-
-  for (
-    let z = minZ;
-    z <= maxZ;
-    z++
-  ) {
-    let row = '';
-
-    for (
-      let x = minX;
-      x <= maxX;
-      x++
-    ) {
-      const piece =
-        lookup.get(
-          `${x},${z}`
-        );
-
-      if (!piece) {
-        row += '.';
-        continue;
-      }
-
-      if (
-        piece.index === 0
-      ) {
-        row += 'S';
-      }
-
-      else if (
-        piece.type ===
-        'turn_left'
-      ) {
-        row += 'L';
-      }
-
-      else if (
-        piece.type ===
-        'turn_right'
-      ) {
-        row += 'R';
-      }
-
-      else if (
-        piece.type ===
-        'ramp_up'
-      ) {
-        row += '^';
-      }
-
-      else if (
-        piece.type ===
-        'ramp_down'
-      ) {
-        row += 'v';
-      }
-
-      else if (
-        piece.heading === 'E' ||
-        piece.heading === 'W'
-      ) {
-        row += '-';
-      }
-
-      else {
-        row += '|';
-      }
-    }
-
-    console.log(row);
-  }
-
-  console.log('');
-}
-
-// ============================================================
-// MAIN
-// ============================================================
+// ------------------------------------------------------------
+// Main
+// ------------------------------------------------------------
 
 function main() {
+
   const args =
-    parseArgs(
-      process.argv
-    );
-
-  if (
-    !Number.isInteger(
-      args.pieces
-    ) ||
-    args.pieces < 8
-  ) {
-    throw new Error(
-      '--pieces must be an integer >= 8.'
-    );
-  }
-
-  if (
-    !Number.isInteger(
-      args.maxHeight
-    ) ||
-    args.maxHeight < 0
-  ) {
-    throw new Error(
-      '--maxHeight must be >= 0.'
-    );
-  }
+    parseArgs(process.argv);
 
   const rng =
-    mulberry32(
-      args.seed
-    );
+    mulberry32(args.seed);
 
   const result =
-    generateLoop(
+    generatePolyTrack(
       rng,
-      args.pieces,
-      args.maxHeight
+      args.length
     );
 
-  if (
-    !result.closed
-  ) {
-    throw new Error(
-      'Could not generate a closed loop. Try another seed or fewer pieces.'
-    );
-  }
-
-  const pieces =
-    classifyPieces(
-      result.path
-    );
-
-  const checkpoints =
-    placeCheckpoints(
-      pieces,
-      5
-    );
-
-  const trackData =
-    toPolyTrackData(
-      pieces,
-      checkpoints,
+  const data =
+    makeTrackData(
+      result.parts,
       args.seed
     );
 
-  validateTrack(
-    trackData
-  );
-
-  printAsciiMap(
-    pieces
-  );
 
   console.log(
-    `Generated ${pieces.length} track parts.`
-  );
-
-  console.log(
-    `Turns: ${
-      pieces.filter(
-        p =>
-          p.type ===
-            'turn_left' ||
-          p.type ===
-            'turn_right'
-      ).length
-    }`
-  );
-
-  console.log(
-    `Checkpoints: ${checkpoints.length}`
+    `Generated PolyTrack-style track: ${result.parts.length} parts`
   );
 
   console.log(
     `Seed: ${args.seed}`
   );
 
-  if (
-    args.out
-  ) {
+  console.log(
+    `Logical entries: ${result.logicalEntries}`
+  );
+
+
+  if (args.out) {
+
     fs.writeFileSync(
       args.out,
-      JSON.stringify(
-        trackData,
-        null,
-        2
-      ),
+      JSON.stringify(data, null, 2),
       'utf8'
     );
 
     console.log(
-      `Wrote: ${args.out}`
+      `Wrote ${args.out}`
     );
+
   }
 
   else {
+
     console.log(
-      JSON.stringify(
-        trackData,
-        null,
-        2
-      )
+      JSON.stringify(data, null, 2)
     );
   }
 }
 
-// ============================================================
-// RUN
-// ============================================================
 
-try {
-  main();
-}
-catch (error) {
-  console.error(
-    `\nERROR: ${error.message}\n`
-  );
-
-  process.exit(1);
-}
+main();
