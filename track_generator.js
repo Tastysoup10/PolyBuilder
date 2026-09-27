@@ -1,209 +1,577 @@
-/**
- * PolyTrack Procedural Track Layout Generator (Stage 1)
- * --------------------------------------------------------------
- * This does NOT produce a PolyTrack import file/code yet - the real
- * export format is an opaque encoded blob, not plain JSON, and we
- * don't have a sample of it to reverse-engineer.
- *
- * What this DOES do: design a valid, non-self-intersecting, CLOSED
- * track loop as a sequence of pieces (straight / turn / ramp) on a
- * grid, with checkpoints placed along it. This is the "blueprint".
- * Stage 2 (separate script, once we have a real trackParts sample)
- * will translate this blueprint into actual game pieces.
- *
- * Usage:
- *   node track_generator.js                 -> generates + prints a track
- *   node track_generator.js --seed 42       -> reproducible track
- *   node track_generator.js --pieces 40     -> target piece count
- *   node track_generator.js --out track.json -> also writes JSON to a file
- */
+#!/usr/bin/env node
 
-'use strict';
+const fs = require("fs");
 
-// ---------- tiny seeded RNG (so tracks are reproducible with --seed) ----------
+// ============================================================
+// Seeded random number generator
+// ============================================================
+
 function mulberry32(seed) {
   return function () {
-    seed |= 0;
-    seed = (seed + 0x6d2b79f5) | 0;
-    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    let t = (seed += 0x6D2B79F5);
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
 
-// ---------- CLI args ----------
-function parseArgs(argv) {
-  const args = { seed: Date.now() & 0xffffffff, pieces: 30, out: null, maxHeight: 3 };
-  for (let i = 2; i < argv.length; i++) {
-    if (argv[i] === '--seed') args.seed = parseInt(argv[++i], 10);
-    else if (argv[i] === '--pieces') args.pieces = parseInt(argv[++i], 10);
-    else if (argv[i] === '--out') args.out = argv[++i];
-    else if (argv[i] === '--maxHeight') args.maxHeight = parseInt(argv[++i], 10);
-  }
-  return args;
+// ============================================================
+// PolyTrack part IDs
+// ============================================================
+
+const PART_IDS = {
+  Straight: 0,
+  TurnSharp: 1,
+  SlopeUp: 2,
+  SlopeDown: 3,
+  Slope: 4,
+  Start: 5,
+  Finish: 6,
+  Turn: 7,
+  TurnWide: 8,
+  StraightLong: 9,
+  StraightWide: 10,
+  Checkpoint: 52,
+};
+
+// ============================================================
+// Directions
+// ============================================================
+
+const DIRS = [
+  { name: "E", dx: 1, dz: 0 },
+  { name: "S", dx: 0, dz: 1 },
+  { name: "W", dx: -1, dz: 0 },
+  { name: "N", dx: 0, dz: -1 },
+];
+
+function directionIndex(name) {
+  return DIRS.findIndex(d => d.name === name);
 }
 
-// Directions on the XZ grid: 0=+X(East), 1=+Z(South), 2=-X(West), 3=-Z(North)
-const DIR_VEC = [
-  [1, 0], [0, 1], [-1, 0], [0, -1],
-];
-const DIR_NAME = ['E', 'S', 'W', 'N'];
+function oppositeDirection(dir) {
+  return (dir + 2) % 4;
+}
 
-function key(x, y, z) { return `${x},${y},${z}`; }
+function turnType(from, to) {
+  const diff = (to - from + 4) % 4;
 
-/**
- * Builds a closed loop via randomized DFS on a 3D grid (y = height level,
- * limited to small deltas so ramps stay gentle). Backtracks on dead ends.
- * Stops once it can close the loop back to the start within [minLen,maxLen].
- */
-function generateLoop(rng, targetPieces, maxHeight) {
-  const minLen = Math.max(8, Math.floor(targetPieces * 0.7));
-  const maxLen = targetPieces * 2;
+  if (diff === 0) {
+    return "Straight";
+  }
+
+  if (diff === 1) {
+    return "TurnRight";
+  }
+
+  if (diff === 3) {
+    return "TurnLeft";
+  }
+
+  return "Turn";
+}
+
+// ============================================================
+// Rotation
+//
+// PolyTrack stores rotation as 0-3.
+// This generator uses Y-axis rotation for horizontal track
+// pieces.
+//
+// 0 = East
+// 1 = South
+// 2 = West
+// 3 = North
+// ============================================================
+
+function rotationForDirection(dir) {
+  return dir;
+}
+
+// ============================================================
+// Generate a closed path
+// ============================================================
+
+function generateLoop(rng, requestedPieces, maxHeight) {
+  const minimumLength = Math.max(8, requestedPieces);
 
   for (let attempt = 0; attempt < 500; attempt++) {
-    const start = [0, 0, 0];
-    const visited = new Set([key(...start)]);
-    const path = [start];
-    let dir = Math.floor(rng() * 4);
+    const path = [];
 
-    const stack = []; // {options left to try} per depth, for backtracking
+    const visited = new Set();
 
-    while (path.length < maxLen) {
-      const [x, y, z] = path[path.length - 1];
+    let x = 0;
+    let y = 0;
+    let z = 0;
 
-      // Try to close the loop back to start once we've gone far enough
-      if (path.length >= minLen) {
-        const [sx, , sz] = start;
-        const dx = sx - x, dz = sz - z;
-        if (Math.abs(dx) + Math.abs(dz) === 1 && y === start[1]) {
-          path.push(start);
-          return { path, closed: true };
-        }
-      }
+    let direction = Math.floor(rng() * 4);
 
-      // Candidate next directions: prefer continuing straight, but allow turns
-      const order = [dir, (dir + 3) % 4, (dir + 1) % 4]; // straight, left, right
-      let moved = false;
-      for (const d of shuffle(order, rng)) {
-        const [dx, dz] = DIR_VEC[d];
-        const dy = rng() < 0.12 ? (rng() < 0.5 ? 1 : -1) : 0; // occasional ramp
-        const ny = Math.max(0, Math.min(maxHeight, y + dy));
-        const nx = x + dx, nz = z + dz;
-        const k = key(nx, ny, nz);
-        if (!visited.has(k)) {
-          visited.add(k);
-          path.push([nx, ny, nz]);
-          dir = d;
-          moved = true;
-          break;
-        }
-      }
-      if (!moved) break; // dead end -> give up this attempt, try again
-    }
-  }
-  return { path: null, closed: false };
-}
-
-function shuffle(arr, rng) {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
-  }
-  return a;
-}
-
-/** Classify each grid step into a piece type based on turning/height change. */
-function classifyPieces(path) {
-  const pieces = [];
-  for (let i = 0; i < path.length - 1; i++) {
-    const [x0, y0, z0] = path[i];
-    const [x1, y1, z1] = path[i + 1];
-    const dx = x1 - x0, dz = z1 - z0, dy = y1 - y0;
-    const heading = DIR_NAME[DIR_VEC.findIndex(([vx, vz]) => vx === dx && vz === dz)];
-
-    let type = 'straight';
-    if (i > 0) {
-      const [px, , pz] = path[i - 1];
-      const prevDx = x0 - px, prevDz = z0 - pz;
-      const prevHeadingIdx = DIR_VEC.findIndex(([vx, vz]) => vx === prevDx && vz === prevDz);
-      const curHeadingIdx = DIR_VEC.findIndex(([vx, vz]) => vx === dx && vz === dz);
-      const turn = ((curHeadingIdx - prevHeadingIdx) + 4) % 4;
-      if (turn === 1) type = 'turn_right';
-      else if (turn === 3) type = 'turn_left';
-    }
-    if (dy > 0) type = 'ramp_up';
-    else if (dy < 0) type = 'ramp_down';
-
-    pieces.push({
-      index: i,
-      type,
-      x: x0, y: y0, z: z0,
-      heading,
+    path.push({
+      x,
+      y,
+      z,
+      direction,
     });
+
+    visited.add(`${x},${y},${z}`);
+
+    for (let step = 1; step < minimumLength; step++) {
+      const candidates = [];
+
+      // Prefer continuing forward, but allow turns.
+      const directionChoices = [
+        direction,
+        (direction + 1) % 4,
+        (direction + 3) % 4,
+      ];
+
+      // Occasionally allow a sharper/random direction.
+      if (rng() < 0.15) {
+        directionChoices.push((direction + 2) % 4);
+      }
+
+      for (const nextDirection of directionChoices) {
+        const d = DIRS[nextDirection];
+
+        const nx = x + d.dx;
+        const nz = z + d.dz;
+
+        let ny = y;
+
+        // Occasional elevation change.
+        if (rng() < 0.12) {
+          ny += rng() < 0.5 ? 1 : -1;
+        }
+
+        if (ny < -maxHeight || ny > maxHeight) {
+          continue;
+        }
+
+        const key = `${nx},${ny},${nz}`;
+
+        if (visited.has(key)) {
+          continue;
+        }
+
+        candidates.push({
+          x: nx,
+          y: ny,
+          z: nz,
+          direction: nextDirection,
+        });
+      }
+
+      if (candidates.length === 0) {
+        break;
+      }
+
+      // Prefer straight movement.
+      let next;
+
+      const straight = candidates.find(
+        c => c.direction === direction
+      );
+
+      if (straight && rng() < 0.65) {
+        next = straight;
+      } else {
+        next = candidates[
+          Math.floor(rng() * candidates.length)
+        ];
+      }
+
+      x = next.x;
+      y = next.y;
+      z = next.z;
+      direction = next.direction;
+
+      path.push(next);
+
+      visited.add(`${x},${y},${z}`);
+
+      // Try to close the loop after enough pieces.
+      if (path.length >= 8) {
+        const start = path[0];
+
+        const dx = Math.abs(x - start.x);
+        const dy = Math.abs(y - start.y);
+        const dz = Math.abs(z - start.z);
+
+        if (dx + dy + dz === 1 && y === start.y) {
+          return path;
+        }
+      }
+    }
   }
-  return pieces;
+
+  throw new Error(
+    "Unable to generate a closed track after 500 attempts."
+  );
 }
 
-function placeCheckpoints(pieces, everyN) {
-  const checkpoints = [];
-  for (let i = 0; i < pieces.length; i += everyN) {
-    checkpoints.push(pieces[i].index);
+// ============================================================
+// Convert generated path into PolyTrack parts
+// ============================================================
+
+function classifyParts(path, checkpointSpacing) {
+  const parts = [];
+
+  // Start piece.
+  const start = path[0];
+
+  parts.push({
+    x: start.x,
+    y: start.y,
+    z: start.z,
+    partId: PART_IDS.Start,
+    rotation: rotationForDirection(start.direction),
+    rotationAxis: 0,
+    color: 0,
+    startOrder: 0,
+  });
+
+  let checkpointOrder = 0;
+
+  for (let i = 1; i < path.length; i++) {
+    const current = path[i];
+    const previous = path[i - 1];
+
+    const previousDir = previous.direction;
+    const currentDir = current.direction;
+
+    let partId = PART_IDS.Straight;
+
+    // Height change.
+    if (current.y > previous.y) {
+      partId = PART_IDS.SlopeUp;
+    } else if (current.y < previous.y) {
+      partId = PART_IDS.SlopeDown;
+    } else {
+      // Horizontal movement.
+      const type = turnType(
+        previousDir,
+        currentDir
+      );
+
+      if (type === "TurnLeft" || type === "TurnRight") {
+        partId = PART_IDS.Turn;
+      } else {
+        partId = PART_IDS.Straight;
+      }
+    }
+
+    const part = {
+      x: current.x,
+      y: current.y,
+      z: current.z,
+
+      partId,
+
+      rotation: rotationForDirection(currentDir),
+
+      // Horizontal track pieces rotate around Y.
+      rotationAxis: 0,
+
+      color: 0,
+    };
+
+    // Add checkpoints at regular intervals.
+    if (
+      i > 0 &&
+      i % checkpointSpacing === 0 &&
+      i < path.length - 1
+    ) {
+      part.partId = PART_IDS.Checkpoint;
+      part.checkpointOrder = checkpointOrder++;
+    }
+
+    parts.push(part);
   }
-  return checkpoints;
+
+  return parts;
 }
+
+// ============================================================
+// Generate PolyTrack decoder/encoder-compatible JSON
+// ============================================================
+
+function generateTrack(options) {
+  const {
+    seed,
+    pieces,
+    maxHeight,
+    checkpointSpacing,
+    name,
+    author,
+    environment,
+    sunDirection,
+  } = options;
+
+  const rng = mulberry32(seed);
+
+  const path = generateLoop(
+    rng,
+    pieces,
+    maxHeight
+  );
+
+  const parts = classifyParts(
+    path,
+    checkpointSpacing
+  );
+
+  return {
+    format: "PolyTrack2",
+
+    metadata: {
+      name,
+      author,
+      lastModified: null,
+    },
+
+    track: {
+      environment,
+      environmentId:
+        environment === "Winter"
+          ? 1
+          : environment === "Desert"
+            ? 2
+            : 0,
+
+      sunDirection,
+
+      baseCoordinates: {
+        x: 0,
+        y: 0,
+        z: 0,
+      },
+
+      coordinateWidths: {
+        x: 1,
+        y: 1,
+        z: 1,
+      },
+
+      parts,
+    },
+  };
+}
+
+// ============================================================
+// ASCII preview
+// ============================================================
+
+function printPreview(parts) {
+  if (!parts.length) {
+    return;
+  }
+
+  const minX = Math.min(...parts.map(p => p.x));
+  const maxX = Math.max(...parts.map(p => p.x));
+
+  const minZ = Math.min(...parts.map(p => p.z));
+  const maxZ = Math.max(...parts.map(p => p.z));
+
+  const width = maxX - minX + 1;
+  const height = maxZ - minZ + 1;
+
+  const grid = Array.from(
+    { length: height },
+    () => Array(width).fill(".")
+  );
+
+  for (const part of parts) {
+    const gx = part.x - minX;
+    const gz = part.z - minZ;
+
+    if (
+      gx < 0 ||
+      gz < 0 ||
+      gx >= width ||
+      gz >= height
+    ) {
+      continue;
+    }
+
+    if (part.partId === PART_IDS.Start) {
+      grid[gz][gx] = "S";
+    } else if (part.partId === PART_IDS.Checkpoint) {
+      grid[gz][gx] = "C";
+    } else if (part.partId === PART_IDS.SlopeUp) {
+      grid[gz][gx] = "^";
+    } else if (part.partId === PART_IDS.SlopeDown) {
+      grid[gz][gx] = "v";
+    } else if (part.partId === PART_IDS.Turn) {
+      grid[gz][gx] = "+";
+    } else {
+      grid[gz][gx] = "#";
+    }
+  }
+
+  console.log("\nTrack preview:\n");
+
+  for (const row of grid) {
+    console.log(row.join(""));
+  }
+
+  console.log("");
+}
+
+// ============================================================
+// Command-line argument parsing
+// ============================================================
+
+function getArg(name, defaultValue) {
+  const index = process.argv.indexOf(name);
+
+  if (index === -1) {
+    return defaultValue;
+  }
+
+  const value = process.argv[index + 1];
+
+  if (value === undefined) {
+    throw new Error(
+      `Missing value for ${name}`
+    );
+  }
+
+  return value;
+}
+
+function hasArg(name) {
+  return process.argv.includes(name);
+}
+
+// ============================================================
+// Main
+// ============================================================
 
 function main() {
-  const args = parseArgs(process.argv);
-  const rng = mulberry32(args.seed);
+  const seed = Number(
+    getArg("--seed", Date.now())
+  );
 
-  const { path, closed } = generateLoop(rng, args.pieces, args.maxHeight);
-  if (!closed) {
-    console.error('Could not close a loop with these parameters - try a different --seed or fewer --pieces.');
-    process.exit(1);
+  const pieces = Number(
+    getArg("--pieces", 50)
+  );
+
+  const maxHeight = Number(
+    getArg("--maxHeight", 3)
+  );
+
+  const checkpointSpacing = Number(
+    getArg("--checkpointSpacing", 5)
+  );
+
+  const output = getArg(
+    "--out",
+    "track.json"
+  );
+
+  const name = getArg(
+    "--name",
+    `Generated Track ${seed}`
+  );
+
+  const author = getArg(
+    "--author",
+    "PolyBuilder"
+  );
+
+  const environment = getArg(
+    "--environment",
+    "Summer"
+  );
+
+  const sunDirection = Number(
+    getArg("--sunDirection", 0)
+  );
+
+  if (!Number.isInteger(seed)) {
+    throw new Error(
+      "--seed must be an integer."
+    );
   }
 
-  const pieces = classifyPieces(path);
-  const checkpoints = placeCheckpoints(pieces, 5);
+  if (
+    !Number.isInteger(pieces) ||
+    pieces < 8
+  ) {
+    throw new Error(
+      "--pieces must be an integer >= 8."
+    );
+  }
 
-  const track = {
-    seed: args.seed,
-    pieceCount: pieces.length,
+  if (
+    !Number.isInteger(maxHeight) ||
+    maxHeight < 0
+  ) {
+    throw new Error(
+      "--maxHeight must be an integer >= 0."
+    );
+  }
+
+  if (
+    !Number.isInteger(checkpointSpacing) ||
+    checkpointSpacing < 1
+  ) {
+    throw new Error(
+      "--checkpointSpacing must be >= 1."
+    );
+  }
+
+  if (
+    !["Summer", "Winter", "Desert"]
+      .includes(environment)
+  ) {
+    throw new Error(
+      "--environment must be Summer, Winter, or Desert."
+    );
+  }
+
+  if (
+    !Number.isInteger(sunDirection) ||
+    sunDirection < 0 ||
+    sunDirection >= 180
+  ) {
+    throw new Error(
+      "--sunDirection must be 0-179."
+    );
+  }
+
+  const track = generateTrack({
+    seed,
     pieces,
-    checkpoints,
-  };
+    maxHeight,
+    checkpointSpacing,
+    name,
+    author,
+    environment,
+    sunDirection,
+  });
 
-  // Console preview: simple top-down ASCII map
-  printAsciiMap(pieces);
-  console.log(`\nGenerated a closed loop: ${pieces.length} pieces, ${checkpoints.length} checkpoints, seed ${args.seed}`);
+  fs.writeFileSync(
+    output,
+    JSON.stringify(track, null, 2),
+    "utf8"
+  );
 
-  if (args.out) {
-    require('fs').writeFileSync(args.out, JSON.stringify(track, null, 2));
-    console.log(`Wrote layout to ${args.out}`);
-  } else {
-    console.log('\nFull JSON (pass --out track.json to save instead of printing):');
-    console.log(JSON.stringify(track, null, 2));
-  }
-}
+  console.log(
+    `Generated ${track.track.parts.length} parts.`
+  );
 
-function printAsciiMap(pieces) {
-  const xs = pieces.map(p => p.x), zs = pieces.map(p => p.z);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minZ = Math.min(...zs), maxZ = Math.max(...zs);
-  const grid = [];
-  for (let z = minZ; z <= maxZ; z++) {
-    let row = '';
-    for (let x = minX; x <= maxX; x++) {
-      const p = pieces.find(pp => pp.x === x && pp.z === z);
-      if (!p) { row += '.'; continue; }
-      if (p.type === 'straight') row += (p.heading === 'E' || p.heading === 'W') ? '-' : '|';
-      else if (p.type.startsWith('turn')) row += '+';
-      else row += '^'; // ramp
-    }
-    grid.push(row);
-  }
-  console.log('Top-down layout preview:');
-  console.log(grid.join('\n'));
+  console.log(
+    `Seed: ${seed}`
+  );
+
+  console.log(
+    `Output: ${output}`
+  );
+
+  printPreview(
+    track.track.parts
+  );
 }
 
 main();
