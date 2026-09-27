@@ -31,91 +31,91 @@
         "startOrder": 0
       },
       {
-        "x": 0,
+        "x": 1,
+        "y": 0,
+        "z": 0,
+        "partId": 0,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 2,
+        "y": 0,
+        "z": 0,
+        "partId": 0,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 3,
+        "y": 0,
+        "z": 0,
+        "partId": 1,
+        "rotation": 3,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 3,
         "y": 0,
         "z": -1,
-        "partId": 7,
+        "partId": 1,
         "rotation": 3,
         "rotationAxis": 0,
         "color": 0
       },
       {
-        "x": 0,
+        "x": 4,
         "y": 0,
-        "z": -2,
-        "partId": 0,
-        "rotation": 3,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": 0,
-        "y": 0,
-        "z": -3,
-        "partId": 0,
-        "rotation": 3,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -1,
-        "y": 0,
-        "z": -3,
-        "partId": 7,
-        "rotation": 2,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -2,
-        "y": 0,
-        "z": -3,
+        "z": -1,
         "partId": 52,
-        "rotation": 2,
+        "rotation": 0,
         "rotationAxis": 0,
         "color": 0,
         "checkpointOrder": 0
       },
       {
-        "x": -2,
-        "y": 0,
-        "z": -2,
-        "partId": 7,
-        "rotation": 1,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -2,
+        "x": 5,
         "y": 0,
         "z": -1,
-        "partId": 0,
-        "rotation": 1,
+        "partId": 1,
+        "rotation": 3,
         "rotationAxis": 0,
         "color": 0
       },
       {
-        "x": -2,
+        "x": 5,
         "y": 0,
-        "z": 0,
-        "partId": 0,
-        "rotation": 1,
+        "z": -2,
+        "partId": 1,
+        "rotation": 2,
         "rotationAxis": 0,
         "color": 0
       },
       {
-        "x": -2,
+        "x": 4,
         "y": 0,
-        "z": 1,
+        "z": -2,
         "partId": 0,
-        "rotation": 1,
+        "rotation": 2,
         "rotationAxis": 0,
         "color": 0
       },
       {
-        "x": -2,
+        "x": 3,
         "y": 0,
-        "z": 2,
+        "z": -2,
+        "partId": 0,
+        "rotation": 2,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 2,
+        "y": 0,
+        "z": -2,
         "partId": 52,
         "rotation": 1,
         "rotationAxis": 0,
@@ -123,9 +123,55 @@
         "checkpointOrder": 1
       },
       {
-        "x": -2,
+        "x": 2,
         "y": 0,
-        "z": 3,
+        "z": -1,
+        "partId": 1,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 1,
+        "y": 0,
+        "z": -1,
+        "partId": 0,
+        "rotation": 2,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 0,
+        "y": 0,
+        "z": -1,
+        "partId": 2,
+        "rotation": 2,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -1,
+        "y": 1,
+        "z": -1,
+        "partId": 0,
+        "rotation": 2,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -2,
+        "y": 1,
+        "z": -1,
+        "partId": 52,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0,
+        "checkpointOrder": 2
+      },
+      {
+        "x": -2,
+        "y": 1,
+        "z": 0,
         "partId": 0,
         "rotation": 1,
         "rotationAxis": 0,
@@ -133,18 +179,147 @@
       },
       {
         "x": -2,
-        "y": 0,
-        "z": 4,
+        "y": 1,
+        "z": 1,
+        "partId": 1,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -1,
+        "y": 1,
+        "z": 1,
         "partId": 0,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 0,
+        "y": 1,
+        "z": 1,
+        "partId": 0,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 1,
+        "y": 1,
+        "z": 1,
+        "partId": 52,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0,
+        "checkpointOrder": 3
+      },
+      {
+        "x": 2,
+        "y": 1,
+        "z": 1,
+        "partId": 1,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 2,
+        "y": 1,
+        "z": 2,
+        "partId": 1,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 1,
+        "y": 1,
+        "z": 2,
+        "partId": 1,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 1,
+        "y": 1,
+        "z": 3,
+        "partId": 1,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 0,
+        "y": 1,
+        "z": 3,
+        "partId": 52,
+        "rotation": 2,
+        "rotationAxis": 0,
+        "color": 0,
+        "checkpointOrder": 4
+      },
+      {
+        "x": 0,
+        "y": 1,
+        "z": 2,
+        "partId": 1,
+        "rotation": 2,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -1,
+        "y": 1,
+        "z": 2,
+        "partId": 1,
         "rotation": 1,
         "rotationAxis": 0,
         "color": 0
       },
       {
         "x": -1,
+        "y": 1,
+        "z": 3,
+        "partId": 3,
+        "rotation": 2,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -2,
         "y": 0,
-        "z": 4,
-        "partId": 7,
+        "z": 3,
+        "partId": 1,
+        "rotation": 2,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -2,
+        "y": 0,
+        "z": 2,
+        "partId": 52,
+        "rotation": 3,
+        "rotationAxis": 0,
+        "color": 0,
+        "checkpointOrder": 5
+      },
+      {
+        "x": -1,
+        "y": 0,
+        "z": 2,
+        "partId": 1,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -1,
+        "y": 0,
+        "z": 3,
+        "partId": 1,
         "rotation": 0,
         "rotationAxis": 0,
         "color": 0
@@ -152,33 +327,14 @@
       {
         "x": 0,
         "y": 0,
-        "z": 4,
-        "partId": 0,
-        "rotation": 0,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": 1,
-        "y": 0,
-        "z": 4,
-        "partId": 52,
-        "rotation": 0,
-        "rotationAxis": 0,
-        "color": 0,
-        "checkpointOrder": 2
-      },
-      {
-        "x": 1,
-        "y": 0,
         "z": 3,
-        "partId": 7,
+        "partId": 1,
         "rotation": 3,
         "rotationAxis": 0,
         "color": 0
       },
       {
-        "x": 1,
+        "x": 0,
         "y": 0,
         "z": 2,
         "partId": 0,
@@ -187,22 +343,14 @@
         "color": 0
       },
       {
-        "x": 1,
+        "x": 0,
         "y": 0,
         "z": 1,
-        "partId": 0,
+        "partId": 52,
         "rotation": 3,
         "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": 1,
-        "y": 0,
-        "z": 0,
-        "partId": 0,
-        "rotation": 3,
-        "rotationAxis": 0,
-        "color": 0
+        "color": 0,
+        "checkpointOrder": 6
       }
     ]
   }
