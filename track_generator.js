@@ -1,160 +1,318 @@
 /**
- * PolyBuilder - PolyTrack's built-in procedural generator, reimplemented
- * from the editor generator found in 112.bundle.js.
+ * PolyBuilder - PolyTrack procedural track generator
  *
- * The important difference from the old generator is that this works in
- * PolyTrack's logical generator grid and then writes the exact world
- * coordinates used by TrackData.setPart(): x/z are multiplied by 4.
+ * Full replacement version with working checkpoint generation.
  *
  * Usage:
- *   node track_generator_fixed.js
- *   node track_generator_fixed.js --seed 42
- *   node track_generator_fixed.js --length 50
- *   node track_generator_fixed.js --out track.json
+ *
+ *   node track_generator.js
+ *
+ *   node track_generator.js --seed 42
+ *
+ *   node track_generator.js --length 500
+ *
+ *   node track_generator.js --length 500 --checkpoints 10
+ *
+ *   node track_generator.js --seed 12345 --length 500 --checkpoints 5 --out track.json
+ *
+ * Checkpoints:
+ *
+ *   52 = PolyTrack Checkpoint
+ *
+ * checkpointOrder:
+ *
+ *   0 = first checkpoint
+ *   1 = second checkpoint
+ *   2 = third checkpoint
+ *   ...
  */
 
 'use strict';
 
 const fs = require('fs');
 
+
+// ============================================================
+// RNG
+// ============================================================
+
 function mulberry32(seed) {
+
   let s = seed | 0;
+
   return function rng() {
+
     s = (s + 0x6d2b79f5) | 0;
-    let t = Math.imul(s ^ (s >>> 15), 1 | s);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+
+    let t =
+      Math.imul(
+        s ^ (s >>> 15),
+        1 | s
+      );
+
+    t =
+      (t +
+        Math.imul(
+          t ^ (t >>> 7),
+          61 | t
+        )
+      ) ^ t;
+
+    return (
+      (t ^ (t >>> 14)) >>> 0
+    ) / 4294967296;
   };
 }
 
+
+// ============================================================
+// COMMAND LINE
+// ============================================================
+
 function parseArgs(argv) {
+
   const args = {
-    seed: Date.now() & 0xffffffff,
+
+    seed:
+      Date.now() & 0xffffffff,
+
     length: 50,
+
     out: null,
+
+    // IMPORTANT:
+    // Checkpoints are ON by default.
+    checkpoints: 5,
   };
 
+
   for (let i = 2; i < argv.length; i++) {
+
     switch (argv[i]) {
+
       case '--seed':
-        args.seed = Number(argv[++i]);
+
+        args.seed =
+          Number(argv[++i]);
+
         break;
+
 
       case '--length':
       case '--pieces':
-        args.length = Number(argv[++i]);
+
+        args.length =
+          Number(argv[++i]);
+
         break;
+
 
       case '--out':
-        args.out = argv[++i];
+
+        args.out =
+          argv[++i];
+
         break;
 
+
+      case '--checkpoints':
+
+        args.checkpoints =
+          Number(argv[++i]);
+
+        break;
+
+
       default:
-        throw new Error(`Unknown argument: ${argv[i]}`);
+
+        throw new Error(
+          `Unknown argument: ${argv[i]}`
+        );
     }
   }
 
-  if (!Number.isInteger(args.length) || args.length < 1) {
-    throw new Error('--length must be a positive integer');
+
+  if (
+    !Number.isInteger(args.length) ||
+    args.length < 1
+  ) {
+
+    throw new Error(
+      '--length must be a positive integer'
+    );
   }
+
+
+  if (
+    !Number.isInteger(args.checkpoints) ||
+    args.checkpoints < 0
+  ) {
+
+    throw new Error(
+      '--checkpoints must be a non-negative integer'
+    );
+  }
+
 
   return args;
 }
 
 
-// Exact PolyTrack part IDs from the game's TrackPartType enum.
+// ============================================================
+// POLYTRACK PART IDS
+// ============================================================
+
 const PART = Object.freeze({
+
   Straight: 0,
+
   TurnSharp: 1,
+
   SlopeUp: 2,
+
   SlopeDown: 3,
+
   Slope: 4,
 
   Start: 5,
+
   Finish: 6,
 
+
   ToWideLeft: 8,
+
   ToWideRight: 9,
+
   StraightWide: 10,
+
   InnerCornerWide: 11,
+
   OuterCornerWide: 12,
 
+
   SlopeUpLeftWide: 13,
+
   SlopeUpRightWide: 14,
+
   SlopeDownLeftWide: 15,
+
   SlopeDownRightWide: 16,
+
   SlopeLeftWide: 17,
+
   SlopeRightWide: 18,
 
+
   PillarTop: 19,
+
   PillarMiddle: 20,
+
   PillarBottom: 21,
+
   PillarShort: 22,
+
+
+  // PolyTrack checkpoint.
+  Checkpoint: 52,
 });
 
 
-// TrackData's Y-positive rotation axis.
+// ============================================================
+// POLYTRACK ROTATION AXIS
+// ============================================================
+
 const ROTATION_AXIS_Y_POSITIVE = 0;
 
 
+// ============================================================
+// HELPERS
+// ============================================================
+
 function key(x, y, z) {
+
   return `${x}|${y}|${z}`;
 }
 
 
 function normalizeRotation(rotation) {
-  return ((rotation % 4) + 4) % 4;
+
+  return (
+    ((rotation % 4) + 4) % 4
+  );
 }
 
 
-/**
- * Reimplementation of the editor's generator.
- *
- * Entries with type === null are collision/clearance markers.
- * They are never emitted as actual track parts, but they participate
- * in collision detection.
- */
-function generatePolyTrack(rng, length = 50) {
+// ============================================================
+// POLYTRACK GENERATOR
+// ============================================================
+
+function generatePolyTrack(
+  rng,
+  length = 50
+) {
 
   while (true) {
 
-    const occupied = new Map();
+    const occupied =
+      new Map();
+
     let collision = false;
 
-    // PolyTrack generator state.
+
+    // --------------------------------------------------------
+    // Generator state
+    // --------------------------------------------------------
+
     let x = 0;
+
     let lateral = 0;
+
     let z = 0;
 
-    let direction = Math.floor(4 * rng());
+    let direction =
+      Math.floor(4 * rng());
+
 
     if (rng() < 0.5) {
-      lateral = Math.floor(20 * rng());
+
+      lateral =
+        Math.floor(20 * rng());
     }
 
 
-    // ------------------------------------------------------------
-    // Direction helpers
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // Movement
+    // --------------------------------------------------------
 
     function forward() {
 
       switch (direction) {
 
         case 0:
+
           --z;
+
           break;
+
 
         case 1:
+
           --x;
+
           break;
+
 
         case 2:
+
           ++z;
+
           break;
 
+
         case 3:
+
           ++x;
+
           break;
       }
     }
@@ -165,19 +323,30 @@ function generatePolyTrack(rng, length = 50) {
       switch (direction) {
 
         case 0:
+
           ++z;
+
           break;
+
 
         case 1:
+
           ++x;
+
           break;
+
 
         case 2:
+
           --z;
+
           break;
 
+
         case 3:
+
           --x;
+
           break;
       }
     }
@@ -185,22 +354,35 @@ function generatePolyTrack(rng, length = 50) {
 
     function sideLeft() {
 
-      switch ((direction + 1) % 4) {
+      switch (
+        (direction + 1) % 4
+      ) {
 
         case 0:
+
           --z;
+
           break;
+
 
         case 1:
+
           --x;
+
           break;
+
 
         case 2:
+
           ++z;
+
           break;
 
+
         case 3:
+
           ++x;
+
           break;
       }
     }
@@ -208,66 +390,118 @@ function generatePolyTrack(rng, length = 50) {
 
     function sideRight() {
 
-      switch (((direction - 1) % 4 + 4) % 4) {
+      switch (
+        ((direction - 1) % 4 + 4) % 4
+      ) {
 
         case 0:
+
           --z;
+
           break;
+
 
         case 1:
+
           --x;
+
           break;
+
 
         case 2:
+
           ++z;
+
           break;
 
+
         case 3:
+
           ++x;
+
           break;
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Logical part map
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // Add logical part
+    // --------------------------------------------------------
 
-    function add(px, py, pz, type, rotation = 0) {
+    function add(
+      px,
+      py,
+      pz,
+      type,
+      rotation = 0
+    ) {
 
-      const k = key(px, py, pz);
+      const k =
+        key(px, py, pz);
+
 
       if (occupied.has(k)) {
+
         collision = true;
       }
 
-      occupied.set(k, {
-        x: px,
-        y: py,
-        z: pz,
-        type,
-        direction: normalizeRotation(rotation),
-      });
+
+      occupied.set(
+        k,
+        {
+
+          x: px,
+
+          y: py,
+
+          z: pz,
+
+          type,
+
+          direction:
+            normalizeRotation(rotation),
+        }
+      );
     }
 
 
-    function isOccupied(px, py, pz) {
-      return occupied.has(key(px, py, pz));
+    function isOccupied(
+      px,
+      py,
+      pz
+    ) {
+
+      return occupied.has(
+        key(px, py, pz)
+      );
     }
 
 
-    // ------------------------------------------------------------
-    // Support/pillar pieces
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // Supports
+    // --------------------------------------------------------
 
     function supports() {
 
       let blocked = false;
 
-      for (let yy = 0; yy < lateral; ++yy) {
 
-        if (isOccupied(x, yy, z)) {
+      for (
+        let yy = 0;
+        yy < lateral;
+        ++yy
+      ) {
+
+        if (
+          isOccupied(
+            x,
+            yy,
+            z
+          )
+        ) {
+
           blocked = true;
+
           break;
         }
       }
@@ -275,35 +509,63 @@ function generatePolyTrack(rng, length = 50) {
 
       if (!blocked) {
 
-        for (let yy = 0; yy < lateral; ++yy) {
+        for (
+          let yy = 0;
+          yy < lateral;
+          ++yy
+        ) {
 
           let type;
 
-          if (yy === 0 && yy === lateral - 1) {
-            type = PART.PillarShort;
+
+          if (
+            yy === 0 &&
+            yy === lateral - 1
+          ) {
+
+            type =
+              PART.PillarShort;
+
           }
 
           else if (yy === 0) {
-            type = PART.PillarBottom;
+
+            type =
+              PART.PillarBottom;
+
           }
 
-          else if (yy === lateral - 1) {
-            type = PART.PillarTop;
+          else if (
+            yy === lateral - 1
+          ) {
+
+            type =
+              PART.PillarTop;
+
           }
 
           else {
-            type = PART.PillarMiddle;
+
+            type =
+              PART.PillarMiddle;
           }
 
-          add(x, yy, z, type, 0);
+
+          add(
+            x,
+            yy,
+            z,
+            type,
+            0
+          );
         }
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Narrow track
-    // ------------------------------------------------------------
+    // ========================================================
+    // NARROW GENERATION
+    // ========================================================
 
     function narrow(t) {
 
@@ -311,40 +573,52 @@ function generatePolyTrack(rng, length = 50) {
 
         --t;
 
+
         if (rng() < 0.2) {
+
           wideTransition(t);
+
         }
 
         else if (rng() < 0.6) {
+
           straight(t);
+
         }
 
         else if (rng() < 0.5) {
+
           slope(
             t,
-            lateral < 2 || rng() < 0.5
+            lateral < 2 ||
+            rng() < 0.5
           );
+
         }
 
         else if (rng() < 0.5) {
+
           turnLeft(t);
+
         }
 
         else {
+
           turnRight(t);
         }
 
       }
 
       else {
+
         finish();
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Wide track
-    // ------------------------------------------------------------
+    // ========================================================
+    // WIDE GENERATION
+    // ========================================================
 
     function wide(t) {
 
@@ -352,40 +626,52 @@ function generatePolyTrack(rng, length = 50) {
 
         --t;
 
+
         if (rng() < 0.1) {
+
           narrowTransition(t);
+
         }
 
         else if (rng() < 0.6) {
+
           wideStraight(t);
+
         }
 
         else if (rng() < 0.5) {
+
           wideSlope(
             t,
-            lateral < 2 || rng() < 0.5
+            lateral < 2 ||
+            rng() < 0.5
           );
+
         }
 
         else if (rng() < 0.5) {
+
           wideCornerA(t);
+
         }
 
         else {
+
           wideCornerB(t);
         }
 
       }
 
       else {
+
         narrowTransition(t);
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Straight
-    // ------------------------------------------------------------
+    // ========================================================
+    // STRAIGHT
+    // ========================================================
 
     function straight(t) {
 
@@ -397,17 +683,20 @@ function generatePolyTrack(rng, length = 50) {
         direction
       );
 
+
       supports();
 
+
       forward();
+
 
       narrow(t);
     }
 
 
-    // ------------------------------------------------------------
-    // Left turn
-    // ------------------------------------------------------------
+    // ========================================================
+    // TURN LEFT
+    // ========================================================
 
     function turnLeft(t) {
 
@@ -419,39 +708,51 @@ function generatePolyTrack(rng, length = 50) {
         direction - 1
       );
 
+
       supports();
 
-      direction = (direction + 1) % 4;
+
+      direction =
+        (direction + 1) % 4;
+
 
       forward();
+
 
       if (t > 0) {
 
         --t;
 
+
         if (rng() < 0.4) {
+
           straight(t);
+
         }
 
         else if (rng() < 0.5) {
+
           turnLeft(t);
+
         }
 
         else {
+
           turnRight(t);
         }
 
       }
 
       else {
+
         finish();
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Right turn
-    // ------------------------------------------------------------
+    // ========================================================
+    // TURN RIGHT
+    // ========================================================
 
     function turnRight(t) {
 
@@ -463,40 +764,51 @@ function generatePolyTrack(rng, length = 50) {
         direction
       );
 
+
       supports();
+
 
       direction =
         ((direction - 1) % 4 + 4) % 4;
 
+
       forward();
+
 
       if (t > 0) {
 
         --t;
 
+
         if (rng() < 0.4) {
+
           straight(t);
+
         }
 
         else if (rng() < 0.5) {
+
           turnLeft(t);
+
         }
 
         else {
+
           turnRight(t);
         }
 
       }
 
       else {
+
         finish();
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Narrow slope
-    // ------------------------------------------------------------
+    // ========================================================
+    // SLOPE
+    // ========================================================
 
     function slope(t, up) {
 
@@ -505,9 +817,12 @@ function generatePolyTrack(rng, length = 50) {
           ? PART.SlopeUp
           : PART.SlopeDown;
 
+
       if (!up) {
+
         --lateral;
       }
+
 
       add(
         x,
@@ -516,6 +831,7 @@ function generatePolyTrack(rng, length = 50) {
         null,
         0
       );
+
 
       add(
         x,
@@ -525,9 +841,12 @@ function generatePolyTrack(rng, length = 50) {
         direction
       );
 
+
       forward();
 
+
       if (up) {
+
         ++lateral;
       }
 
@@ -536,40 +855,53 @@ function generatePolyTrack(rng, length = 50) {
 
         --t;
 
+
         if (
           rng() < 0.4 ||
           lateral <= 3
         ) {
 
-          reverseSlope(t, up);
+          reverseSlope(
+            t,
+            up
+          );
 
         }
 
         else {
 
-          sideSlope(t, up);
-
+          sideSlope(
+            t,
+            up
+          );
         }
 
       }
 
       else {
 
-        reverseSlope(t, up);
-
+        reverseSlope(
+          t,
+          up
+        );
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Reverse narrow slope
-    // ------------------------------------------------------------
+    // ========================================================
+    // REVERSE SLOPE
+    // ========================================================
 
-    function reverseSlope(t, up) {
+    function reverseSlope(
+      t,
+      up
+    ) {
 
       if (!up) {
+
         --lateral;
       }
+
 
       add(
         x,
@@ -579,10 +911,12 @@ function generatePolyTrack(rng, length = 50) {
         0
       );
 
+
       const type =
         up
           ? PART.SlopeDown
           : PART.SlopeUp;
+
 
       add(
         x,
@@ -592,31 +926,43 @@ function generatePolyTrack(rng, length = 50) {
         direction + 2
       );
 
+
       forward();
 
+
       if (up) {
+
         ++lateral;
       }
 
+
       if (t > 0) {
+
         narrow(t - 1);
+
       }
 
       else {
+
         finish();
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Sideways narrow slope
-    // ------------------------------------------------------------
+    // ========================================================
+    // SIDE SLOPE
+    // ========================================================
 
-    function sideSlope(t, up) {
+    function sideSlope(
+      t,
+      up
+    ) {
 
       if (!up) {
+
         lateral -= 2;
       }
+
 
       add(
         x,
@@ -626,6 +972,7 @@ function generatePolyTrack(rng, length = 50) {
         0
       );
 
+
       add(
         x,
         lateral + 2,
@@ -633,6 +980,7 @@ function generatePolyTrack(rng, length = 50) {
         null,
         0
       );
+
 
       add(
         x,
@@ -644,44 +992,56 @@ function generatePolyTrack(rng, length = 50) {
           : direction + 2
       );
 
+
       forward();
 
+
       if (up) {
+
         lateral += 2;
       }
+
 
       if (t > 0) {
 
         --t;
+
 
         if (
           rng() < 0.4 ||
           lateral <= 3
         ) {
 
-          reverseSlope(t, up);
+          reverseSlope(
+            t,
+            up
+          );
 
         }
 
         else {
 
-          sideSlope(t, up);
-
+          sideSlope(
+            t,
+            up
+          );
         }
 
       }
 
       else {
 
-        reverseSlope(t, up);
-
+        reverseSlope(
+          t,
+          up
+        );
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Finish
-    // ------------------------------------------------------------
+    // ========================================================
+    // FINISH
+    // ========================================================
 
     function finish() {
 
@@ -695,9 +1055,9 @@ function generatePolyTrack(rng, length = 50) {
     }
 
 
-    // ------------------------------------------------------------
-    // Start
-    // ------------------------------------------------------------
+    // ========================================================
+    // START
+    // ========================================================
 
     function start(t) {
 
@@ -709,17 +1069,20 @@ function generatePolyTrack(rng, length = 50) {
         direction
       );
 
+
       supports();
 
+
       forward();
+
 
       narrow(t);
     }
 
 
-    // ------------------------------------------------------------
-    // Narrow -> Wide
-    // ------------------------------------------------------------
+    // ========================================================
+    // NARROW -> WIDE
+    // ========================================================
 
     function wideTransition(t) {
 
@@ -733,9 +1096,12 @@ function generatePolyTrack(rng, length = 50) {
           direction
         );
 
+
         supports();
 
+
         sideRight();
+
 
         add(
           x,
@@ -745,7 +1111,9 @@ function generatePolyTrack(rng, length = 50) {
           direction + 2
         );
 
+
         supports();
+
 
         forward();
 
@@ -761,9 +1129,12 @@ function generatePolyTrack(rng, length = 50) {
           direction
         );
 
+
         supports();
 
+
         sideLeft();
+
 
         add(
           x,
@@ -773,20 +1144,24 @@ function generatePolyTrack(rng, length = 50) {
           direction + 1
         );
 
+
         supports();
+
 
         forward();
 
+
         sideRight();
       }
+
 
       wide(t);
     }
 
 
-    // ------------------------------------------------------------
-    // Wide -> Narrow
-    // ------------------------------------------------------------
+    // ========================================================
+    // WIDE -> NARROW
+    // ========================================================
 
     function narrowTransition(t) {
 
@@ -800,9 +1175,12 @@ function generatePolyTrack(rng, length = 50) {
           direction + 3
         );
 
+
         supports();
 
+
         sideLeft();
+
 
         add(
           x,
@@ -812,7 +1190,9 @@ function generatePolyTrack(rng, length = 50) {
           direction + 2
         );
 
+
         supports();
+
 
         forward();
 
@@ -828,9 +1208,12 @@ function generatePolyTrack(rng, length = 50) {
           direction + 2
         );
 
+
         supports();
 
+
         sideLeft();
+
 
         add(
           x,
@@ -840,20 +1223,24 @@ function generatePolyTrack(rng, length = 50) {
           direction
         );
 
+
         supports();
+
 
         forward();
 
+
         sideRight();
       }
+
 
       narrow(t);
     }
 
 
-    // ------------------------------------------------------------
-    // Wide straight
-    // ------------------------------------------------------------
+    // ========================================================
+    // WIDE STRAIGHT
+    // ========================================================
 
     function wideStraight(t) {
 
@@ -865,9 +1252,12 @@ function generatePolyTrack(rng, length = 50) {
         direction
       );
 
+
       supports();
 
+
       sideLeft();
+
 
       add(
         x,
@@ -877,19 +1267,23 @@ function generatePolyTrack(rng, length = 50) {
         direction + 2
       );
 
+
       supports();
+
 
       sideRight();
 
+
       forward();
+
 
       wide(t);
     }
 
 
-    // ------------------------------------------------------------
-    // Wide corner A
-    // ------------------------------------------------------------
+    // ========================================================
+    // WIDE CORNER A
+    // ========================================================
 
     function wideCornerA(t) {
 
@@ -901,9 +1295,12 @@ function generatePolyTrack(rng, length = 50) {
         direction
       );
 
+
       supports();
 
+
       forward();
+
 
       add(
         x,
@@ -913,9 +1310,12 @@ function generatePolyTrack(rng, length = 50) {
         direction + 3
       );
 
+
       supports();
 
+
       sideLeft();
+
 
       add(
         x,
@@ -925,9 +1325,12 @@ function generatePolyTrack(rng, length = 50) {
         direction + 1
       );
 
+
       supports();
 
+
       backward();
+
 
       add(
         x,
@@ -937,22 +1340,27 @@ function generatePolyTrack(rng, length = 50) {
         direction + 3
       );
 
+
       supports();
 
+
       forward();
+
 
       direction =
         (direction + 1) % 4;
 
+
       forward();
+
 
       wide(t);
     }
 
 
-    // ------------------------------------------------------------
-    // Wide corner B
-    // ------------------------------------------------------------
+    // ========================================================
+    // WIDE CORNER B
+    // ========================================================
 
     function wideCornerB(t) {
 
@@ -964,9 +1372,12 @@ function generatePolyTrack(rng, length = 50) {
         direction
       );
 
+
       supports();
 
+
       sideLeft();
+
 
       add(
         x,
@@ -976,9 +1387,12 @@ function generatePolyTrack(rng, length = 50) {
         direction + 2
       );
 
+
       supports();
 
+
       forward();
+
 
       add(
         x,
@@ -988,9 +1402,12 @@ function generatePolyTrack(rng, length = 50) {
         direction
       );
 
+
       supports();
 
+
       sideRight();
+
 
       add(
         x,
@@ -1000,49 +1417,65 @@ function generatePolyTrack(rng, length = 50) {
         direction + 1
       );
 
+
       supports();
 
+
       backward();
+
 
       direction =
         ((direction - 1) % 4 + 4) % 4;
 
+
       forward();
+
 
       wide(t);
     }
 
 
-    // ------------------------------------------------------------
-    // Wide slope
-    // ------------------------------------------------------------
+    // ========================================================
+    // WIDE SLOPE
+    // ========================================================
 
-    function wideSlope(t, up) {
+    function wideSlope(
+      t,
+      up
+    ) {
 
       let a;
       let b;
 
+
       if (up) {
 
-        a = PART.SlopeUpLeftWide;
-        b = PART.SlopeUpRightWide;
+        a =
+          PART.SlopeUpLeftWide;
+
+        b =
+          PART.SlopeUpRightWide;
 
       }
 
       else {
 
-        a = PART.SlopeDownLeftWide;
-        b = PART.SlopeDownRightWide;
+        a =
+          PART.SlopeDownLeftWide;
 
+        b =
+          PART.SlopeDownRightWide;
       }
 
 
       if (!up) {
+
         --lateral;
       }
 
 
       sideLeft();
+
 
       add(
         x,
@@ -1051,6 +1484,7 @@ function generatePolyTrack(rng, length = 50) {
         null,
         0
       );
+
 
       add(
         x,
@@ -1063,6 +1497,7 @@ function generatePolyTrack(rng, length = 50) {
 
       sideRight();
 
+
       add(
         x,
         lateral + 1,
@@ -1070,6 +1505,7 @@ function generatePolyTrack(rng, length = 50) {
         null,
         0
       );
+
 
       add(
         x,
@@ -1082,7 +1518,9 @@ function generatePolyTrack(rng, length = 50) {
 
       forward();
 
+
       if (up) {
+
         ++lateral;
       }
 
@@ -1091,62 +1529,80 @@ function generatePolyTrack(rng, length = 50) {
 
         --t;
 
+
         if (
           rng() < 0.4 ||
           lateral <= 3
         ) {
 
-          wideSlopeReverse(t, up);
+          wideSlopeReverse(
+            t,
+            up
+          );
 
         }
 
         else {
 
-          wideSlopeSide(t, up);
-
+          wideSlopeSide(
+            t,
+            up
+          );
         }
 
       }
 
       else {
 
-        wideSlopeReverse(t, up);
-
+        wideSlopeReverse(
+          t,
+          up
+        );
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Reverse wide slope
-    // ------------------------------------------------------------
+    // ========================================================
+    // WIDE SLOPE REVERSE
+    // ========================================================
 
-    function wideSlopeReverse(t, up) {
+    function wideSlopeReverse(
+      t,
+      up
+    ) {
 
       let a;
       let b;
 
 
       if (!up) {
+
         --lateral;
       }
 
 
       if (up) {
 
-        a = PART.SlopeDownRightWide;
-        b = PART.SlopeDownLeftWide;
+        a =
+          PART.SlopeDownRightWide;
+
+        b =
+          PART.SlopeDownLeftWide;
 
       }
 
       else {
 
-        a = PART.SlopeUpRightWide;
-        b = PART.SlopeUpLeftWide;
+        a =
+          PART.SlopeUpRightWide;
 
+        b =
+          PART.SlopeUpLeftWide;
       }
 
 
       sideLeft();
+
 
       add(
         x,
@@ -1155,6 +1611,7 @@ function generatePolyTrack(rng, length = 50) {
         null,
         0
       );
+
 
       add(
         x,
@@ -1167,6 +1624,7 @@ function generatePolyTrack(rng, length = 50) {
 
       sideRight();
 
+
       add(
         x,
         lateral + 1,
@@ -1174,6 +1632,7 @@ function generatePolyTrack(rng, length = 50) {
         null,
         0
       );
+
 
       add(
         x,
@@ -1186,21 +1645,28 @@ function generatePolyTrack(rng, length = 50) {
 
       forward();
 
+
       if (up) {
+
         ++lateral;
       }
+
 
       wide(t);
     }
 
 
-    // ------------------------------------------------------------
-    // Sideways wide slope
-    // ------------------------------------------------------------
+    // ========================================================
+    // WIDE SLOPE SIDE
+    // ========================================================
 
-    function wideSlopeSide(t, up) {
+    function wideSlopeSide(
+      t,
+      up
+    ) {
 
       if (!up) {
+
         lateral -= 2;
       }
 
@@ -1209,6 +1675,7 @@ function generatePolyTrack(rng, length = 50) {
 
         sideLeft();
 
+
         add(
           x,
           lateral + 1,
@@ -1217,6 +1684,7 @@ function generatePolyTrack(rng, length = 50) {
           0
         );
 
+
         add(
           x,
           lateral + 2,
@@ -1224,6 +1692,7 @@ function generatePolyTrack(rng, length = 50) {
           null,
           0
         );
+
 
         add(
           x,
@@ -1236,6 +1705,7 @@ function generatePolyTrack(rng, length = 50) {
 
         sideRight();
 
+
         add(
           x,
           lateral + 1,
@@ -1244,6 +1714,7 @@ function generatePolyTrack(rng, length = 50) {
           0
         );
 
+
         add(
           x,
           lateral + 2,
@@ -1251,6 +1722,7 @@ function generatePolyTrack(rng, length = 50) {
           null,
           0
         );
+
 
         add(
           x,
@@ -1266,6 +1738,7 @@ function generatePolyTrack(rng, length = 50) {
 
         sideLeft();
 
+
         add(
           x,
           lateral + 1,
@@ -1274,6 +1747,7 @@ function generatePolyTrack(rng, length = 50) {
           0
         );
 
+
         add(
           x,
           lateral + 2,
@@ -1281,6 +1755,7 @@ function generatePolyTrack(rng, length = 50) {
           null,
           0
         );
+
 
         add(
           x,
@@ -1293,6 +1768,7 @@ function generatePolyTrack(rng, length = 50) {
 
         sideRight();
 
+
         add(
           x,
           lateral + 1,
@@ -1301,6 +1777,7 @@ function generatePolyTrack(rng, length = 50) {
           0
         );
 
+
         add(
           x,
           lateral + 2,
@@ -1308,6 +1785,7 @@ function generatePolyTrack(rng, length = 50) {
           null,
           0
         );
+
 
         add(
           x,
@@ -1321,7 +1799,9 @@ function generatePolyTrack(rng, length = 50) {
 
       forward();
 
+
       if (up) {
+
         lateral += 2;
       }
 
@@ -1330,74 +1810,95 @@ function generatePolyTrack(rng, length = 50) {
 
         --t;
 
+
         if (
           rng() < 0.4 ||
           lateral <= 3
         ) {
 
-          wideSlopeReverse(t, up);
+          wideSlopeReverse(
+            t,
+            up
+          );
 
         }
 
         else {
 
-          wideSlopeSide(t, up);
-
+          wideSlopeSide(
+            t,
+            up
+          );
         }
 
       }
 
       else {
 
-        wideSlopeReverse(t, up);
-
+        wideSlopeReverse(
+          t,
+          up
+        );
       }
     }
 
 
-    // ------------------------------------------------------------
-    // Begin generation
-    // ------------------------------------------------------------
+    // ========================================================
+    // RUN GENERATOR
+    // ========================================================
 
     start(length);
 
 
-    // ------------------------------------------------------------
-    // Collision-free attempt
-    // ------------------------------------------------------------
+    // ========================================================
+    // EXPORT
+    // ========================================================
 
     if (!collision) {
 
       const parts = [];
 
-      for (const entry of occupied.values()) {
 
-        // Null entries are collision markers only.
+      for (
+        const entry of
+        occupied.values()
+      ) {
+
         if (entry.type == null) {
+
           continue;
         }
 
 
         parts.push({
 
-          // PolyTrack's generator converts logical X/Z
-          // coordinates to world coordinates using *4.
+          // PolyTrack's generator uses
+          // 4x logical coordinates.
           x: 4 * entry.x,
 
           y: entry.y,
 
           z: 4 * entry.z,
 
-          partId: entry.type,
 
-          rotation: entry.direction,
+          partId:
+            entry.type,
+
+
+          rotation:
+            entry.direction,
+
 
           rotationAxis:
             ROTATION_AXIS_Y_POSITIVE,
 
+
           color: 0,
 
-          checkpointOrder: null,
+
+          checkpointOrder:
+            null,
+
 
           startOrder:
             entry.type === PART.Start
@@ -1408,26 +1909,210 @@ function generatePolyTrack(rng, length = 50) {
 
 
       return {
+
         parts,
-        logicalEntries: occupied.size,
+
+        logicalEntries:
+          occupied.size,
       };
     }
 
-    // If a collision occurred, discard this entire
-    // attempt and generate again.
+
+    // Collision:
+    // discard this attempt and regenerate.
   }
 }
 
 
-// ------------------------------------------------------------
-// PolyTrack2 JSON wrapper
-// ------------------------------------------------------------
+// ============================================================
+// ADD CHECKPOINTS
+// ============================================================
 
-function makeTrackData(parts, seed) {
+function addCheckpoints(
+  parts,
+  checkpointCount
+) {
+
+  if (checkpointCount <= 0) {
+
+    return 0;
+  }
+
+
+  /*
+   * IMPORTANT:
+   *
+   * Do NOT use every part as a candidate.
+   *
+   * A checkpoint must replace an actual narrow road
+   * section.
+   *
+   * Straight = 0
+   * Checkpoint = 52
+   */
+
+  const candidates = [];
+
+
+  for (
+    let i = 0;
+    i < parts.length;
+    i++
+  ) {
+
+    if (
+      parts[i].partId ===
+      PART.Straight
+    ) {
+
+      candidates.push(i);
+    }
+  }
+
+
+  if (candidates.length === 0) {
+
+    throw new Error(
+      'The generated track contains no narrow straight sections for checkpoints.'
+    );
+  }
+
+
+  /*
+   * We cannot put more checkpoints than there
+   * are straight road sections.
+   */
+
+  const count =
+    Math.min(
+      checkpointCount,
+      candidates.length
+    );
+
+
+  /*
+   * Select UNIQUE candidate indices.
+   *
+   * This is intentionally different from the
+   * previous implementation.
+   *
+   * We use evenly distributed integer positions,
+   * and explicitly prevent duplicates.
+   */
+
+  const selected = [];
+
+  let previous =
+    -1;
+
+
+  for (
+    let order = 0;
+    order < count;
+    order++
+  ) {
+
+    let index;
+
+
+    if (count === 1) {
+
+      index =
+        Math.floor(
+          candidates.length / 2
+        );
+
+    }
+
+    else {
+
+      index =
+        Math.floor(
+          (
+            order *
+            (candidates.length - 1)
+          ) /
+          (count - 1)
+        );
+    }
+
+
+    /*
+     * Make absolutely certain the candidate
+     * hasn't already been selected.
+     */
+
+    if (index <= previous) {
+
+      index =
+        previous + 1;
+    }
+
+
+    if (
+      index >= candidates.length
+    ) {
+
+      index =
+        candidates.length - 1;
+    }
+
+
+    selected.push(
+      candidates[index]
+    );
+
+
+    previous = index;
+  }
+
+
+  /*
+   * Convert selected road pieces to
+   * actual PolyTrack checkpoints.
+   */
+
+  for (
+    let order = 0;
+    order < selected.length;
+    order++
+  ) {
+
+    const partIndex =
+      selected[order];
+
+
+    const part =
+      parts[partIndex];
+
+
+    part.partId =
+      PART.Checkpoint;
+
+
+    part.checkpointOrder =
+      order;
+  }
+
+
+  return selected.length;
+}
+
+
+// ============================================================
+// TRACK JSON
+// ============================================================
+
+function makeTrackData(
+  parts,
+  seed
+) {
 
   return {
 
-    format: 'PolyTrack2',
+    format:
+      'PolyTrack2',
+
 
     metadata: {
 
@@ -1441,6 +2126,7 @@ function makeTrackData(parts, seed) {
         null,
     },
 
+
     track: {
 
       environment:
@@ -1452,17 +2138,26 @@ function makeTrackData(parts, seed) {
       sunDirection:
         0,
 
+
       baseCoordinates: {
+
         x: 0,
+
         y: 0,
+
         z: 0,
       },
 
+
       coordinateWidths: {
+
         x: 1,
+
         y: 1,
+
         z: 1,
       },
+
 
       parts,
     },
@@ -1470,23 +2165,68 @@ function makeTrackData(parts, seed) {
 }
 
 
-// ------------------------------------------------------------
-// Main
-// ------------------------------------------------------------
+// ============================================================
+// MAIN
+// ============================================================
 
 function main() {
 
   const args =
-    parseArgs(process.argv);
+    parseArgs(
+      process.argv
+    );
+
+
+  console.log('');
+  console.log(
+    'PolyBuilder / PolyTrack Generator'
+  );
+  console.log(
+    '----------------------------------'
+  );
+  console.log(
+    `Seed:        ${args.seed}`
+  );
+  console.log(
+    `Length:      ${args.length}`
+  );
+  console.log(
+    `Checkpoints: ${args.checkpoints}`
+  );
+  console.log('');
+
 
   const rng =
-    mulberry32(args.seed);
+    mulberry32(
+      args.seed
+    );
+
+
+  // ----------------------------------------------------------
+  // Generate normal track first.
+  // ----------------------------------------------------------
 
   const result =
     generatePolyTrack(
       rng,
       args.length
     );
+
+
+  // ----------------------------------------------------------
+  // Add checkpoints after the track exists.
+  // ----------------------------------------------------------
+
+  const checkpointCount =
+    addCheckpoints(
+      result.parts,
+      args.checkpoints
+    );
+
+
+  // ----------------------------------------------------------
+  // Build final JSON.
+  // ----------------------------------------------------------
 
   const data =
     makeTrackData(
@@ -1495,29 +2235,117 @@ function main() {
     );
 
 
-  console.log(
-    `Generated PolyTrack-style track: ${result.parts.length} parts`
-  );
+  // ----------------------------------------------------------
+  // Verify checkpoints BEFORE writing.
+  // ----------------------------------------------------------
+
+  const actualCheckpoints =
+    data.track.parts.filter(
+      part =>
+        part.partId ===
+        PART.Checkpoint
+    );
+
 
   console.log(
-    `Seed: ${args.seed}`
+    `Generated parts: ${data.track.parts.length}`
   );
 
   console.log(
     `Logical entries: ${result.logicalEntries}`
   );
 
+  console.log(
+    `Checkpoints added: ${checkpointCount}`
+  );
+
+  console.log(
+    `Checkpoints found: ${actualCheckpoints.length}`
+  );
+
+
+  // ----------------------------------------------------------
+  // Hard verification.
+  // ----------------------------------------------------------
+
+  if (
+    actualCheckpoints.length !==
+    checkpointCount
+  ) {
+
+    throw new Error(
+      `Checkpoint verification failed: expected ` +
+      `${checkpointCount}, found ` +
+      `${actualCheckpoints.length}`
+    );
+  }
+
+
+  for (
+    let i = 0;
+    i < actualCheckpoints.length;
+    i++
+  ) {
+
+    if (
+      actualCheckpoints[i]
+        .checkpointOrder !== i
+    ) {
+
+      throw new Error(
+        `Checkpoint order verification failed at index ${i}`
+      );
+    }
+  }
+
+
+  console.log(
+    'Checkpoint verification: OK'
+  );
+
+
+  // ----------------------------------------------------------
+  // Show checkpoint coordinates.
+  // ----------------------------------------------------------
+
+  for (
+    const checkpoint of
+    actualCheckpoints
+  ) {
+
+    console.log(
+      `  Checkpoint ` +
+      `${checkpoint.checkpointOrder + 1}: ` +
+      `x=${checkpoint.x}, ` +
+      `y=${checkpoint.y}, ` +
+      `z=${checkpoint.z}, ` +
+      `rotation=${checkpoint.rotation}`
+    );
+  }
+
+
+  console.log('');
+
+
+  // ----------------------------------------------------------
+  // Write output.
+  // ----------------------------------------------------------
 
   if (args.out) {
 
     fs.writeFileSync(
       args.out,
-      JSON.stringify(data, null, 2),
+      JSON.stringify(
+        data,
+        null,
+        2
+      ),
       'utf8'
     );
 
+
     console.log(
-      `Wrote ${args.out}`
+      `Wrote: ${args.out}`
     );
 
   }
@@ -1525,7 +2353,11 @@ function main() {
   else {
 
     console.log(
-      JSON.stringify(data, null, 2)
+      JSON.stringify(
+        data,
+        null,
+        2
+      )
     );
   }
 }
