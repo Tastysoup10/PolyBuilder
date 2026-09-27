@@ -1,7 +1,7 @@
 {
   "format": "PolyTrack2",
   "metadata": {
-    "name": "Generated Track 47",
+    "name": "Generated Track 7",
     "author": "PolyBuilder",
     "lastModified": null
   },
@@ -25,7 +25,7 @@
         "y": 0,
         "z": 0,
         "partId": 5,
-        "rotation": 3,
+        "rotation": 0,
         "rotationAxis": 0,
         "color": 0,
         "startOrder": 0
@@ -34,7 +34,7 @@
         "x": 0,
         "y": 0,
         "z": -1,
-        "partId": 0,
+        "partId": 7,
         "rotation": 3,
         "rotationAxis": 0,
         "color": 0
@@ -58,118 +58,35 @@
         "color": 0
       },
       {
-        "x": 0,
+        "x": -1,
         "y": 0,
-        "z": -4,
-        "partId": 0,
-        "rotation": 3,
+        "z": -3,
+        "partId": 7,
+        "rotation": 2,
         "rotationAxis": 0,
         "color": 0
       },
       {
-        "x": 0,
+        "x": -2,
         "y": 0,
-        "z": -5,
+        "z": -3,
         "partId": 52,
-        "rotation": 3,
+        "rotation": 2,
         "rotationAxis": 0,
         "color": 0,
         "checkpointOrder": 0
       },
       {
-        "x": -1,
-        "y": 0,
-        "z": -5,
-        "partId": 7,
-        "rotation": 2,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
         "x": -2,
-        "y": 0,
-        "z": -5,
-        "partId": 0,
-        "rotation": 2,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -3,
-        "y": 0,
-        "z": -5,
-        "partId": 0,
-        "rotation": 2,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -4,
-        "y": 0,
-        "z": -5,
-        "partId": 0,
-        "rotation": 2,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -4,
-        "y": 0,
-        "z": -4,
-        "partId": 52,
-        "rotation": 1,
-        "rotationAxis": 0,
-        "color": 0,
-        "checkpointOrder": 1
-      },
-      {
-        "x": -3,
-        "y": 0,
-        "z": -4,
-        "partId": 7,
-        "rotation": 0,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -2,
-        "y": 0,
-        "z": -4,
-        "partId": 0,
-        "rotation": 0,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -1,
-        "y": 0,
-        "z": -4,
-        "partId": 0,
-        "rotation": 0,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -1,
-        "y": 0,
-        "z": -3,
-        "partId": 7,
-        "rotation": 1,
-        "rotationAxis": 0,
-        "color": 0
-      },
-      {
-        "x": -1,
         "y": 0,
         "z": -2,
-        "partId": 52,
+        "partId": 7,
         "rotation": 1,
         "rotationAxis": 0,
-        "color": 0,
-        "checkpointOrder": 2
+        "color": 0
       },
       {
-        "x": -1,
+        "x": -2,
         "y": 0,
         "z": -1,
         "partId": 0,
@@ -178,11 +95,112 @@
         "color": 0
       },
       {
-        "x": -1,
+        "x": -2,
         "y": 0,
         "z": 0,
         "partId": 0,
         "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -2,
+        "y": 0,
+        "z": 1,
+        "partId": 0,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -2,
+        "y": 0,
+        "z": 2,
+        "partId": 52,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0,
+        "checkpointOrder": 1
+      },
+      {
+        "x": -2,
+        "y": 0,
+        "z": 3,
+        "partId": 0,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -2,
+        "y": 0,
+        "z": 4,
+        "partId": 0,
+        "rotation": 1,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": -1,
+        "y": 0,
+        "z": 4,
+        "partId": 7,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 0,
+        "y": 0,
+        "z": 4,
+        "partId": 0,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 1,
+        "y": 0,
+        "z": 4,
+        "partId": 52,
+        "rotation": 0,
+        "rotationAxis": 0,
+        "color": 0,
+        "checkpointOrder": 2
+      },
+      {
+        "x": 1,
+        "y": 0,
+        "z": 3,
+        "partId": 7,
+        "rotation": 3,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 1,
+        "y": 0,
+        "z": 2,
+        "partId": 0,
+        "rotation": 3,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 1,
+        "y": 0,
+        "z": 1,
+        "partId": 0,
+        "rotation": 3,
+        "rotationAxis": 0,
+        "color": 0
+      },
+      {
+        "x": 1,
+        "y": 0,
+        "z": 0,
+        "partId": 0,
+        "rotation": 3,
         "rotationAxis": 0,
         "color": 0
       }
